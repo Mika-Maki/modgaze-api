@@ -13,6 +13,21 @@ config/tls/
 *.log
 run/
 
+# Cloudflare: publish only reviewed scripts and the sanitized host template.
+/cf/*
+!/cf/tunnel.sh
+!/cf/quick.sh
+!/cf/tunnel.host
+/cf/*.private
+/cf/*.local
+
+# Local diagnostic artifacts and host overrides
+/audit-*/
+/hosts
+/hosts.*
+*.pcap
+*.pcapng
+
 # Tooling / OS
 node_modules/
 coverage/

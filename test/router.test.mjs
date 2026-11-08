@@ -107,6 +107,7 @@ async function fixture(t, { configure = () => {}, handler } = {}) {
 }
 
 const check = (name, fn) => test(name, { timeout: TEST_TIMEOUT }, fn);
+const capped = (body, path) => path.endsWith('/count_tokens') || ['max_tokens', 'max_completion_tokens', 'max_output_tokens'].some(k => Object.hasOwn(body, k)) ? body : { ...body, [path.includes('/responses') ? 'max_output_tokens' : path.includes('/chat/') ? 'max_completion_tokens' : 'max_tokens']: 8192 };
 const payload = extra => ({ model: MODEL, messages: [{ role: 'user', content: 'hello' }], ...extra });
 
 check('healthz is available without credentials and does not contact upstream', async t => {
@@ -130,7 +131,7 @@ for (const [path, expected, body] of [
     assert.equal(f.calls.length, 1);
     assert.equal(f.calls[0].url, expected);
     assert.equal(f.calls[0].method, 'POST');
-    assert.deepEqual(f.calls[0].json, body);
+    assert.deepEqual(f.calls[0].json, capped(body, path));
   });
 }
 
@@ -226,15 +227,15 @@ check('an upstreamModel alias is applied without dropping other request fields',
   const body = payload({ temperature: 0, metadata: { trace: 'opaque' }, reasoning_effort: 'high' });
   const res = await request(f.origin, '/v1/chat/completions', { body });
   assert.equal(res.status, 200);
-  assert.deepEqual(f.calls[0].json, { ...body, model: 'private-model' });
+  assert.deepEqual(f.calls[0].json, { ...capped(body, '/v1/chat/completions'), model: 'private-model' });
 });
 
-check('JSON request bytes are unchanged when no alias or defaults apply', async t => {
-  const f = await fixture(t);
+check('JSON requests are canonicalized without changing native fields when no alias, defaults or limit apply', async t => {
+  const f = await fixture(t, { configure(config) { delete config.groups[0].models[0].maxOutputTokens; } });
   const raw = Buffer.from('{  "model" : "public-model",\n "messages": [], "custom":1e+3, "text":"你好" }\n');
   const res = await request(f.origin, '/v1/chat/completions', { body: raw });
   assert.equal(res.status, 200);
-  assert.deepEqual(f.calls[0].body, raw);
+  assert.deepEqual(f.calls[0].body, Buffer.from(JSON.stringify(JSON.parse(raw.toString('utf8')))));
 });
 
 check('JSON response bytes and upstream success status are preserved', async t => {
@@ -271,7 +272,7 @@ check('protocol defaults never leak into a different protocol', async t => {
   const body = { model: MODEL, input: 'hello' };
   const res = await request(f.origin, '/v1/responses', { body });
   assert.equal(res.status, 200);
-  assert.deepEqual(f.calls[0].json, body);
+  assert.deepEqual(f.calls[0].json, capped(body, '/v1/responses'));
 });
 
 check('chat image, tools and native reasoning parameters survive unchanged', async t => {
@@ -286,11 +287,12 @@ check('chat image, tools and native reasoning parameters survive unchanged', asy
   });
   const res = await request(f.origin, '/v1/chat/completions', { body });
   assert.equal(res.status, 200);
-  assert.deepEqual(f.calls[0].json, body);
+  assert.deepEqual(f.calls[0].json, capped(body, '/v1/chat/completions'));
 });
 
-check('responses input items, tools and reasoning object survive unchanged', async t => {
-  const f = await fixture(t);
+check('responses input items, tools and reasoning object survive with an owned previous response', async t => {
+  const f = await fixture(t, { handler(req, res) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"id":"resp_earlier"}'); } });
+  await request(f.origin, '/v1/responses', { body: { model: MODEL, input: 'seed' } });
   const body = { model: MODEL, input: [{ role: 'user', content: [
     { type: 'input_text', text: 'describe' },
     { type: 'input_image', image_url: 'data:image/png;base64,AA==' },
@@ -298,7 +300,7 @@ check('responses input items, tools and reasoning object survive unchanged', asy
   previous_response_id: 'resp_earlier', include: ['reasoning.encrypted_content'] };
   const res = await request(f.origin, '/v1/responses', { body });
   assert.equal(res.status, 200);
-  assert.deepEqual(f.calls[0].json, body);
+  assert.deepEqual(f.calls[1].json, capped(body, '/v1/responses'));
 });
 
 check('messages image, tool blocks, system and thinking survive unchanged', async t => {
@@ -386,8 +388,10 @@ for (const [method, path, body] of [
   ['GET', '/v1/responses/resp_test/input_items?limit=2&after=item_1&order=asc', undefined],
   ['POST', '/v1/responses/resp_test/cancel', {}],
 ]) {
-  check(method + ' ' + path + ' passes through without a model field', async t => {
-    const f = await fixture(t);
+  check(method + ' ' + path + ' passes through only after this key creates the response', async t => {
+    const f = await fixture(t, { handler(req, res) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"id":"resp_test"}'); } });
+    await request(f.origin, '/v1/responses', { body: { model: MODEL, input: 'seed' } });
+    f.calls.length = 0;
     const res = await request(f.origin, path, { method, body });
     assert.equal(res.status, 200);
     assert.equal(f.calls.length, 1);
@@ -397,12 +401,12 @@ for (const [method, path, body] of [
   });
 }
 
-check('response resource operations require a group responses route', async t => {
+check('unknown response resource operations fail closed even without a group route', async t => {
   const f = await fixture(t, { configure(config) {
     delete config.groups[0].routes.responses;
   } });
   const res = await request(f.origin, '/v1/responses/resp_test', { method: 'GET' });
-  assert.equal(res.status, 400);
+  assert.equal(res.status, 404);
   assert.equal(f.calls.length, 0);
 });
 

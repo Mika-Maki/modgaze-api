@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -15,11 +15,16 @@ import {
 } from './admin-store.mjs';
 import { PROTOCOLS, upstreamURL } from './router.mjs';
 import { createMetrics } from './metrics.mjs';
+import { createRequestAudit, normalizeAuditConfig } from './request-audit.mjs';
 import { readBackup as readBackupFile, validateConfig } from './config.mjs';
 import { secretRedactor } from './secrets.mjs';
+import { normalizeMRExpiresAt } from './key-expiry.mjs';
+import { createRequestLimiter, normalizeRateLimits, normalizeGroupRateLimits } from './rate-limit.mjs';
 
 const COOKIE_NAME = 'mr_admin_session';
-const cookieName = req => req.socket.encrypted ? COOKIE_NAME + '_tls' : COOKIE_NAME;
+const PUBLIC_ORIGIN_REQUEST = Symbol('publicOriginRequest');
+const secureRequest = req => Boolean(req.socket.encrypted || req[PUBLIC_ORIGIN_REQUEST]);
+const cookieName = req => secureRequest(req) ? COOKIE_NAME + '_tls' : COOKIE_NAME;
 const SESSION_ABSOLUTE_MS = 12 * 60 * 60 * 1000;
 const SESSION_IDLE_MS = 2 * 60 * 60 * 1000;
 const BODY_LIMIT = 8 * 1024 * 1024;
@@ -34,8 +39,10 @@ function digest(value) {
 }
 
 function safeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function parseCookies(header) {
@@ -54,11 +61,11 @@ function parseCookies(header) {
 }
 
 function setSessionCookie(res, raw, maxAge = Math.floor(SESSION_ABSOLUTE_MS / 1000)) {
-  res.setHeader('set-cookie', cookieName(res.req) + '=' + raw + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + maxAge + (res.req.socket.encrypted ? '; Secure' : ''));
+  res.setHeader('set-cookie', cookieName(res.req) + '=' + raw + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + maxAge + (secureRequest(res.req) ? '; Secure' : ''));
 }
 
 function clearSessionCookie(res) {
-  res.setHeader('set-cookie', cookieName(res.req) + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' + (res.req.socket.encrypted ? '; Secure' : ''));
+  res.setHeader('set-cookie', cookieName(res.req) + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' + (secureRequest(res.req) ? '; Secure' : ''));
 }
 
 function sendJson(res, status, payload, headers = {}) {
@@ -151,6 +158,16 @@ export async function createAdmin(options = {}) {
   const adminPort = Number(options.adminPort ?? 8788);
   const tlsAllowedHosts = options.tlsAllowedHosts ?? [];
   const httpAllowedHosts = options.allowedHosts ?? [];
+  let publicOrigin = null;
+  if (options.publicOrigin !== undefined) {
+    try {
+      const value = options.publicOrigin;
+      const url = new URL(value);
+      if (typeof value !== 'string' || url.protocol !== 'https:' || url.username || url.password ||
+          url.search || url.hash || (value !== url.origin && value !== url.origin + '/')) throw new Error();
+      publicOrigin = url;
+    } catch { throw new Error('Invalid adminPublicOrigin: expected an HTTPS origin'); }
+  }
   if (!Array.isArray(httpAllowedHosts) || httpAllowedHosts.some(h => typeof h !== 'string' || !h || [...h].some(c => !'abcdefghijklmnopqrstuvwxyz0123456789.:-[]'.includes(c.toLowerCase())))) throw new Error('Invalid admin allowedHosts');
   if (!Array.isArray(tlsAllowedHosts) || tlsAllowedHosts.some(h => typeof h !== 'string' || !h || [...h].some(c => !'abcdefghijklmnopqrstuvwxyz0123456789.:-[]'.includes(c.toLowerCase())))) throw new Error('Invalid TLS allowedHosts');
   const authPath = resolve(options.authPath ?? join(dirname(configPath), 'admin-auth.private.json'));
@@ -158,34 +175,47 @@ export async function createAdmin(options = {}) {
   const routerPort = typeof options.routerPort === 'function' ? options.routerPort : () => options.routerPort;
   const reload = options.reload ?? (async () => {});
   const metrics = options.metrics ?? createMetrics();
+  const requestAudit = options.requestAudit ?? createRequestAudit();
   const auth = new AdminAuth(authPath);
-  const store = new ConfigStore({ configPath, backupDir, reload });
+  const limiter = createRequestLimiter();
+  let rateLimits;
+  let rateLimitsSignature;
+  const store = options.store ?? new ConfigStore({ configPath, backupDir, reload: async resolved => {
+    await reload(resolved);
+    rateLimits = normalizeRateLimits(resolved.rateLimits);
+  } });
+  const readStore = store.read.bind(store);
+  store.read = async () => {
+    const snapshot = await readStore();
+    const signature = JSON.stringify(snapshot.compiled.rateLimits);
+    if (rateLimitsSignature !== undefined && signature !== rateLimitsSignature) {
+      rateLimits = normalizeRateLimits(snapshot.compiled.rateLimits);
+    }
+    rateLimitsSignature = signature;
+    return snapshot;
+  };
+  const initialSnapshot = await store.read();
+  requestAudit.configure(initialSnapshot.compiled.audit);
+  rateLimits = normalizeRateLimits(options.rateLimits ?? initialSnapshot.compiled.rateLimits);
+  let refreshingLimits;
+  async function refreshRateLimits() {
+    // Read before admission, even when an earlier low limit denies all requests.
+    // A local config correction therefore recovers without a UI request or restart.
+    refreshingLimits ??= store.read().catch(() => null).finally(() => { refreshingLimits = undefined; });
+    await refreshingLimits;
+  }
+  const peerFor = req => String(req.socket.remoteAddress ?? 'unknown').replace(/^::ffff:/i, '');
+  function acquireLogin(req) {
+    const limits = rateLimits.admin;
+    return limiter.acquire([
+      { id: 'admin:login', maxConcurrent: limits.loginMaxConcurrent, rpm: 0 },
+      { id: 'admin:login:peer:' + peerFor(req), maxConcurrent: 0, rpm: limits.loginRpm },
+    ]);
+  }
   const startedAt = Date.now();
   const audit = [];
   const sessions = new Map();
   let authFingerprint;
-  let rate = { failures: 0, firstAt: 0, blockedUntil: 0 };
-  let indexHtml = '';
-  try { indexHtml = await readFile(join(publicDir, 'index.html'), 'utf8'); } catch {}
-
-  const loginGate = () => {
-    const now = Date.now();
-    if (rate.blockedUntil > now) {
-      const wait = Math.ceil((rate.blockedUntil - now) / 1000);
-      const error = httpError(429, '尝试次数过多，请在 ' + wait + ' 秒后重试');
-      error.retryAfter = wait;
-      throw error;
-    }
-  };
-  const loginFailed = () => {
-    const now = Date.now();
-    if (!rate.firstAt || now - rate.firstAt > 10 * 60 * 1000) { rate.firstAt = now; rate.failures = 0; }
-    rate.failures += 1;
-    if (rate.failures >= 5) {
-      rate.blockedUntil = now + Math.min(15 * 60 * 1000, 60000 * 2 ** (rate.failures - 5));
-    }
-  };
-  const loginSucceeded = () => { rate = { failures: 0, firstAt: 0, blockedUntil: 0 }; };
 
   function auditEvent(action, target, ok = true, detail = null) {
     audit.unshift({ time: Date.now(), action, target, ok, detail: detail == null ? null : String(detail).slice(0, 300) });
@@ -195,7 +225,7 @@ export async function createAdmin(options = {}) {
   function createSession(req) {
     const raw = randomBytes(32).toString('hex');
     const record = {
-      secureTransport: Boolean(req.socket.encrypted),
+      secureTransport: secureRequest(req),
       csrf: randomBytes(32).toString('hex'),
       createdAt: Date.now(),
       lastSeen: Date.now(),
@@ -210,7 +240,7 @@ export async function createAdmin(options = {}) {
     if (typeof raw !== 'string' || !/^[a-f0-9]{64}$/.test(raw)) return null;
     const hash = digest(raw);
     const record = sessions.get(hash);
-    if (!record || record.secureTransport !== Boolean(req.socket.encrypted)) return null;
+    if (!record || record.secureTransport !== secureRequest(req)) return null;
     const now = Date.now();
     if (now > record.expiresAt || now - record.lastSeen > SESSION_IDLE_MS) {
       sessions.delete(hash);
@@ -308,11 +338,17 @@ export async function createAdmin(options = {}) {
         hosts.add(hostname.toLowerCase() + ':' + port);
       }
     }
-    if (!hosts.has(host)) throw httpError(403, '非法的 Host 请求头');
+    // An explicit public HTTPS origin supports local TLS-terminating proxies.
+    // Never infer trusted transport or host from arbitrary forwarded headers.
+    const peer = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/i, '');
+    const publicHost = publicOrigin !== null && host === publicOrigin.host;
+    const publicRequest = publicHost && (encrypted || peer === '127.0.0.1' || peer === '::1');
+    if ((publicHost && !publicRequest) || (!publicRequest && !hosts.has(host))) throw httpError(403, '非法的 Host 请求头');
     const origin = req.headers.origin;
-    const origins = new Set([(encrypted ? 'https://' : 'http://') + host]);
-    if (origin && !origins.has(String(origin))) throw httpError(403, '非法的请求来源');
+    const expectedOrigin = publicRequest ? publicOrigin.origin : (encrypted ? 'https://' : 'http://') + host;
+    if (origin && String(origin) !== expectedOrigin) throw httpError(403, '非法的请求来源');
     if (req.headers['sec-fetch-site'] === 'cross-site') throw httpError(403, '拒绝跨站请求');
+    req[PUBLIC_ORIGIN_REQUEST] = publicRequest;
   }
 
   function groupPayload(result, id) {
@@ -333,6 +369,7 @@ export async function createAdmin(options = {}) {
       ok: true,
       now: Date.now(),
       version: PACKAGE.version,
+      configRevision: store.revision,
       runtime,
       service,
       settings: sanitizeSettings(snapshot.raw, snapshot.compiled, runtime),
@@ -340,6 +377,7 @@ export async function createAdmin(options = {}) {
       groups,
       stats: metrics.snapshot(),
       recentAudit: audit.slice(0, 100),
+      requestAudit: requestAudit.snapshot(),
       backups,
       limits: {
         protocols: PROTOCOLS,
@@ -434,17 +472,18 @@ export async function createAdmin(options = {}) {
       headers['content-type'] = 'application/json';
       requestInit = { method: 'POST', headers, body: JSON.stringify(payload), redirect: 'manual', signal: AbortSignal.timeout(30000) };
     }
-    const secrets = [target.upstreamApiKey, ...(target.apiKeys ?? []), ...(target.virtualApiKeys ?? []),
-      ...Object.values(target.routes ?? {}).map(route => route?.upstreamApiKey),
-      ...(target.models ?? []).flatMap(item => Object.values(item.routes ?? {}).map(route => route?.upstreamApiKey))]
-      .filter(value => typeof value === 'string');
-    const redact = secretRedactor([...secrets, ...(resolvedGroup.apiKeys ?? []), ...(resolvedGroup.virtualApiKeys ?? []), resolvedGroup.upstreamApiKey, route.upstreamApiKey].filter(value => typeof value === 'string'));
+    const credentials = snapshot.resolved.groups.flatMap(group => [
+      group.upstreamApiKey, ...(group.apiKeys ?? []), ...(group.virtualApiKeys ?? []),
+      ...Object.values(group.routes ?? {}).map(item => item?.upstreamApiKey),
+      ...(group.models ?? []).flatMap(item => Object.values(item.routes ?? {}).map(route => route?.upstreamApiKey)),
+    ]).filter(value => typeof value === 'string');
+    const redact = secretRedactor(credentials);
     const started = Date.now();
     let response;
     try { response = await fetch(endpoint, requestInit); }
     catch (error) {
       const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
-      return { ok: false, status: 0, latencyMs: Date.now() - started, error: timedOut ? '请求超时（30s）' : redact.text(error.message), protocol, baseURL: route.baseURL, mode };
+      return { ok: false, status: 0, latencyMs: Date.now() - started, error: timedOut ? '请求超时（30s）' : '上游连接失败', protocol, baseURL: route.baseURL, mode };
     }
     const snippet = redact.text(await readLimited(response, 256 * 1024)).slice(0, 800);
     return {
@@ -506,7 +545,7 @@ export async function createAdmin(options = {}) {
     try { response = await fetch(base + path, requestInit); }
     catch (error) {
       const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
-      return { ok: false, status: 0, latencyMs: Date.now() - started, error: timedOut ? '请求超时（30s）' : redact.text(error.message), mode, protocol };
+      return { ok: false, status: 0, latencyMs: Date.now() - started, error: timedOut ? '请求超时（30s）' : '上游连接失败', mode, protocol };
     }
     const text = redact.text(await readLimited(response, 256 * 1024));
     let models;
@@ -538,16 +577,17 @@ export async function createAdmin(options = {}) {
     }
     if (path === '/api/auth/setup' && method === 'POST') {
       const peer = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
-      if (peer !== '127.0.0.1' && peer !== '::1') throw httpError(403, '请先在服务器本机设置管理员密码');
+      if (req[PUBLIC_ORIGIN_REQUEST] || (peer !== '127.0.0.1' && peer !== '::1')) throw httpError(403, '请先在服务器本机设置管理员密码');
       const current = await authState();
       if (current.configured) throw httpError(409, current.error ? '管理员密码文件无效，请本地重置后再试' : '管理员密码已经设置，请登录');
       const body = await readJson(req);
+      try { assertPassword(body.password); } catch { throw httpError(400, '密码格式无效，至少需要 ' + ADMIN_PASSWORD_MIN_LENGTH + ' 个字符'); }
+      const releaseLogin = acquireLogin(req);
       try { await auth.setPassword(body.password, { exclusive: true }); }
       catch (error) {
         if (error.code === 'EEXIST') throw httpError(409, '管理员密码已经设置，请刷新页面登录');
-        const message = error instanceof Error ? error.message : String(error);
-        throw httpError(400, /at least/i.test(message) ? '密码至少需要 ' + ADMIN_PASSWORD_MIN_LENGTH + ' 个字符' : /blank/i.test(message) ? '密码不能为空白字符' : message);
-      }
+        throw httpError(500, '无法保存管理员密码，请在本机检查密码文件');
+      } finally { releaseLogin(); }
       authFingerprint = undefined;
       await authState();
       const session = createSession(req);
@@ -564,15 +604,16 @@ export async function createAdmin(options = {}) {
         error.code = 'setup_required';
         throw error;
       }
-      loginGate();
       const body = await readJson(req);
-      const ok = await auth.verify(body.password);
+      // Reserve synchronously before verify() can begin asynchronous scrypt work.
+      const releaseLogin = acquireLogin(req);
+      let ok;
+      try { ok = await auth.verify(body.password); }
+      finally { releaseLogin(); }
       if (!ok) {
-        loginFailed();
         auditEvent('auth.login_failed', 'admin', false);
         throw httpError(401, '管理员密码错误');
       }
-      loginSucceeded();
       const session = createSession(req);
       setSessionCookie(res, session.raw, session.maxAge);
       auditEvent('auth.login', 'admin', true);
@@ -611,6 +652,7 @@ export async function createAdmin(options = {}) {
         virtualApiKeys: [],
         routes: {},
         models: [],
+        rateLimits: normalizeGroupRateLimits(body.rateLimits),
       };
       for (const [protocol, route] of Object.entries(body.routes)) {
         assertProtocol(protocol);
@@ -654,6 +696,10 @@ export async function createAdmin(options = {}) {
             else group.name = body.name.trim();
           }
           if (body.note !== undefined) group.note = assertNote(body.note);
+          if (body.rateLimits !== undefined) {
+            normalizeGroupRateLimits(body.rateLimits);
+            group.rateLimits = normalizeGroupRateLimits({ ...normalizeGroupRateLimits(group.rateLimits), ...body.rateLimits });
+          }
           if (body.enabled !== undefined) {
             if (typeof body.enabled !== 'boolean') throw httpError(400, 'enabled 必须是布尔值');
             group.enabled = body.enabled;
@@ -693,6 +739,10 @@ export async function createAdmin(options = {}) {
           if (raw.groups.some(group => group.id === newId)) throw httpError(409, '目标分组 ID 已存在');
           const clone = structuredClone(source);
           clone.id = newId;
+          if (body.rateLimits !== undefined) {
+            normalizeGroupRateLimits(body.rateLimits);
+            clone.rateLimits = normalizeGroupRateLimits({ ...normalizeGroupRateLimits(source.rateLimits), ...body.rateLimits });
+          }
           clone.name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : (source.name ? source.name + ' 副本' : newId);
           clone.enabled = source.enabled !== false;
           clone.apiKeys = [];
@@ -860,7 +910,12 @@ export async function createAdmin(options = {}) {
             removeKeyMeta(group, 'virtualApiKeys', keyId);
             return true;
           }
-          setKeyLabel(group, 'virtualApiKeys', keyId, assertLabel(body.label));
+          if (Object.hasOwn(body, 'label')) setKeyLabel(group, 'virtualApiKeys', keyId, assertLabel(body.label));
+          if (Object.hasOwn(body, 'expiresAt')) {
+            const expiresAt = normalizeMRExpiresAt(body.expiresAt);
+            group.virtualKeyMeta ??= {};
+            group.virtualKeyMeta[keyId] = { ...(group.virtualKeyMeta[keyId] ?? {}), expiresAt };
+          }
           return true;
         }, { label: 'key.update' });
         auditEvent(method === 'DELETE' ? 'key.delete' : 'key.update', id + '/virtual/' + keyId, true);
@@ -870,6 +925,7 @@ export async function createAdmin(options = {}) {
       if (parts[3] === 'api-keys' && (method === 'PATCH' || method === 'DELETE')) {
         const keyId = parts[4];
         const body = method === 'PATCH' ? await readJson(req) : {};
+        if (Object.hasOwn(body, 'expiresAt')) throw httpError(400, 'MR Expires at 仅适用于 MR 虚拟 Key');
         const result = await store.update((raw, before) => {
           const group = groupById(raw, id);
           const resolvedGroup = resolvedGroupById(before.resolved, id) ?? group;
@@ -899,10 +955,13 @@ export async function createAdmin(options = {}) {
         const found = findKeyEntry(group, resolvedGroup, 'virtualApiKeys', keyId);
         if (isObject(found.entry) && typeof found.entry.env === 'string') throw httpError(409, '环境变量 Key 不能在此轮换，请更新环境变量');
         const label = group.virtualKeyMeta?.[keyId]?.label ?? '轮换密钥';
+        const expiresAt = normalizeMRExpiresAt(group.virtualKeyMeta?.[keyId]?.expiresAt);
         newKey = 'mr-' + randomBytes(32).toString('hex');
         group.virtualApiKeys[found.index] = newKey;
         removeKeyMeta(group, 'virtualApiKeys', keyId);
         recordKeyMeta(group, 'virtualApiKeys', newKey, label);
+        const newKeyId = createHash('sha256').update(newKey).digest('hex').slice(0, 16);
+        group.virtualKeyMeta[newKeyId].expiresAt = expiresAt;
         return true;
       }, { label: 'key.rotate' });
       auditEvent('key.rotate', id + '/virtual/' + keyId, true);
@@ -956,12 +1015,14 @@ export async function createAdmin(options = {}) {
       }
       if (parts[2] === 'password' && method === 'POST' && parts.length === 3) {
         const body = await readJson(req);
-        loginGate();
-        const valid = await auth.verify(body.currentPassword);
-        if (!valid) { loginFailed(); throw httpError(401, '当前密码错误'); }
-        try { await auth.setPassword(body.newPassword); }
-        catch (error) { throw httpError(400, error instanceof Error ? error.message : String(error)); }
-        loginSucceeded();
+        const releaseLogin = acquireLogin(req);
+        try {
+          const valid = await auth.verify(body.currentPassword);
+          if (!valid) throw httpError(401, '当前密码错误');
+          try { assertPassword(body.newPassword); } catch { throw httpError(400, '新密码格式无效，至少需要 ' + ADMIN_PASSWORD_MIN_LENGTH + ' 个字符'); }
+          try { await auth.setPassword(body.newPassword); }
+          catch { throw httpError(500, '无法保存管理员密码，请在本机检查密码文件'); }
+        } finally { releaseLogin(); }
         sessions.clear();
         authFingerprint = undefined;
         // Refresh the auth fingerprint first; otherwise the new session would be
@@ -978,13 +1039,17 @@ export async function createAdmin(options = {}) {
 
     if (parts.length === 2) {
       if (parts[1] === 'state' && method === 'GET') { sendJson(res, 200, await statePayload()); return; }
-      if (parts[1] === 'stats' && method === 'GET') { sendJson(res, 200, { ok: true, now: Date.now(), stats: metrics.snapshot() }); return; }
+      if (parts[1] === 'stats' && method === 'GET') { sendJson(res, 200, { ok: true, now: Date.now(), configRevision: store.revision, stats: metrics.snapshot() }); return; }
       if (parts[1] === 'requests' && method === 'GET') {
         const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 50));
         sendJson(res, 200, { ok: true, requests: metrics.snapshot().recent.slice(0, limit) });
         return;
       }
       if (parts[1] === 'audit' && method === 'GET') { sendJson(res, 200, { ok: true, audit: audit.slice(0, 200) }); return; }
+      if (parts[1] === 'request-audit' && method === 'GET') {
+        sendJson(res, 200, { ok: true, ...requestAudit.snapshot(url.searchParams.has('ip') ? { ip: url.searchParams.get('ip') } : {}) });
+        return;
+      }
       if (parts[1] === 'backups' && method === 'GET') { sendJson(res, 200, { ok: true, backups: await store.listBackups() }); return; }
       if (parts[1] === 'settings' && method === 'GET') {
         const snapshot = await store.read();
@@ -1013,7 +1078,7 @@ export async function createAdmin(options = {}) {
 
     if (parts[1] === 'settings' && method === 'PATCH' && parts.length === 2) {
       const body = await readJson(req);
-      const allowed = new Set(['host', 'port', 'adminPort', 'maxBodyBytes', 'upstreamTimeoutMs', 'requestTimeoutMs', 'accessLog']);
+      const allowed = new Set(['host', 'port', 'adminPort', 'maxBodyBytes', 'maxResponseBytes', 'rateLimits', 'upstreamTimeoutMs', 'requestTimeoutMs', 'accessLog', 'audit']);
       for (const key of Object.keys(body)) if (!allowed.has(key)) throw httpError(400, '未知设置项：' + key);
       if (body.host !== undefined && (typeof body.host !== 'string' || !body.host.trim() || body.host.length > 255)) throw httpError(400, '监听地址无效');
       if (body.port !== undefined && (!Number.isSafeInteger(body.port) || body.port < 1 || body.port > 65535)) throw httpError(400, '路由端口必须在 1-65535 之间');
@@ -1022,6 +1087,7 @@ export async function createAdmin(options = {}) {
       for (const field of ['upstreamTimeoutMs', 'requestTimeoutMs']) {
         if (body[field] !== undefined && (!Number.isSafeInteger(body[field]) || body[field] < 1000 || body[field] > 24 * 60 * 60 * 1000)) throw httpError(400, field + ' 必须在 1 秒到 24 小时之间');
       }
+      if (body.maxResponseBytes !== undefined && (!Number.isSafeInteger(body.maxResponseBytes) || body.maxResponseBytes <= 0)) throw httpError(400, 'maxResponseBytes 必须是正安全整数');
       if (body.accessLog !== undefined && typeof body.accessLog !== 'boolean') throw httpError(400, 'accessLog 必须是布尔值');
       const effectiveAdminPort = body.adminPort ?? currentAdminPort();
       if (body.port !== undefined && Number(body.port) === Number(effectiveAdminPort)) throw httpError(400, '路由端口与管理台端口不能相同');
@@ -1030,12 +1096,29 @@ export async function createAdmin(options = {}) {
       const result = await store.update((raw, before) => {
         beforeCompiled = before.compiled;
         adminBefore = Number.isInteger(raw.adminPort) ? raw.adminPort : currentAdminPort();
-        for (const key of allowed) if (body[key] !== undefined) raw[key] = body[key];
+        for (const key of allowed) if (!['rateLimits', 'audit'].includes(key) && body[key] !== undefined) raw[key] = body[key];
+        if (body.audit !== undefined) {
+          if (!isObject(body.audit)) throw httpError(400, 'audit 必须是 JSON 对象');
+          // Validate the patch before merging; null/unknown fields must not be hidden.
+          normalizeAuditConfig(body.audit);
+          const current = before.compiled.audit;
+          raw.audit = normalizeAuditConfig({ ...current, ...body.audit, fields: { ...current.fields, ...body.audit.fields } });
+        }
+        if (body.rateLimits !== undefined) {
+          if (!isObject(body.rateLimits)) throw httpError(400, 'rateLimits 必须是 JSON 对象');
+          const merged = structuredClone(before.compiled.rateLimits ?? normalizeRateLimits(raw.rateLimits));
+          for (const [section, patch] of Object.entries(body.rateLimits)) {
+            if (!Object.hasOwn(merged, section) || !isObject(patch)) throw httpError(400, 'rateLimits 配置项无效');
+            Object.assign(merged[section], patch);
+          }
+          raw.rateLimits = normalizeRateLimits(merged);
+        }
         const effectivePort = raw.port ?? before.compiled.port;
         const effectiveAdmin = raw.adminPort ?? currentAdminPort();
         if (effectivePort === effectiveAdmin) throw httpError(400, '路由端口与管理台端口不能相同');
         return true;
       }, { label: 'settings.update' });
+      requestAudit.configure(result.compiled.audit);
       auditEvent('settings.update', Object.keys(body).join(','), true);
       const restart = restartRequired({ compiled: beforeCompiled }, result, adminBefore, Number.isInteger(result.raw.adminPort) ? result.raw.adminPort : currentAdminPort());
       sendJson(res, 200, { ok: true, summary: result.summary, backup: result.backup, settings: sanitizeSettings(result.raw, result.compiled, runtimeInfo()), restartRequired: restart });
@@ -1071,7 +1154,7 @@ export async function createAdmin(options = {}) {
       }
       if (parts[2] === 'reload' && method === 'POST' && parts.length === 3) {
         const snapshot = await store.read();
-        await reload(snapshot.resolved);
+        await store.reload(snapshot.resolved);
         auditEvent('config.reload', 'config/local.json', true);
         sendJson(res, 200, { ok: true, summary: snapshot.summary, warnings: configWarnings(snapshot.raw, snapshot.compiled) });
         return;
@@ -1103,7 +1186,7 @@ export async function createAdmin(options = {}) {
         const name = parts[2];
         let raw;
         try { raw = await readBackupFile(backupDir, name); }
-        catch (error) { throw httpError(400, '备份不存在或不可读', error.message); }
+        catch { throw httpError(400, '备份不存在或不可读'); }
         sendText(res, 200, JSON.stringify(raw, null, 2) + '\n', 'application/json; charset=utf-8', {
           'content-disposition': 'attachment; filename="' + name.replace(/[^A-Za-z0-9._-]/g, '_') + '"',
         });
@@ -1143,6 +1226,17 @@ export async function createAdmin(options = {}) {
     throw httpError(404, '未知管理接口');
   }
 
+  async function readStatic(file, asset = false) {
+    const root = await realpath(publicDir);
+    const target = await realpath(resolve(publicDir, file));
+    if (target !== root && !target.startsWith(root + sep)) throw httpError(404, '页面不存在');
+    if (asset) {
+      const assetRoot = await realpath(join(publicDir, 'assets'));
+      if (!assetRoot.startsWith(root + sep) || !target.startsWith(assetRoot + sep)) throw httpError(404, '页面不存在');
+    }
+    return await readFile(target, 'utf8');
+  }
+
   async function serveStatic(req, res, path) {
     if (path === '/favicon.ico') { res.writeHead(204); res.end(); return; }
     const files = {
@@ -1162,7 +1256,7 @@ export async function createAdmin(options = {}) {
       const assetPath = resolve(assetRoot, relativePath);
       if (assetPath !== assetRoot && !assetPath.startsWith(assetRoot + sep)) throw httpError(404, '页面不存在');
       const type = /\.css$/i.test(relativePath) ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8';
-      const content = await readFile(assetPath, 'utf8');
+      const content = await readStatic(join('assets', relativePath), true);
       sendText(res, 200, content, type, { 'cache-control': 'no-store' });
       return;
     }
@@ -1170,13 +1264,13 @@ export async function createAdmin(options = {}) {
     const [file, type] = entry;
     let content;
     if (file === 'index.html') {
-      content = indexHtml;
+      content = await readStatic(file);
       if (!content) throw httpError(500, 'Web UI 资源缺失，请检查 public/index.html');
       content = content.replaceAll('%APP_VERSION%', PACKAGE.version).replaceAll('%ADMIN_PORT%', String(currentAdminPort()));
       res.setHeader('content-security-policy', "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; form-action 'self'");
       res.setHeader('x-frame-options', 'DENY');
     }
-    content = file === 'index.html' ? content : await readFile(join(publicDir, file), 'utf8');
+    content = file === 'index.html' ? content : await readStatic(file, file.startsWith('assets/'));
     sendText(res, 200, content, type, { 'referrer-policy': 'no-referrer', 'cache-control': 'no-store' });
   }
 
@@ -1186,10 +1280,15 @@ export async function createAdmin(options = {}) {
     let message;
     let detail = null;
     let code = null;
-    if (error instanceof HttpError) {
+    if (error?.status === 429 && error?.type === 'rate_limit_error') {
+      status = 429;
+      message = '请求过于频繁，请稍后重试';
+      code = 'rate_limit_error';
+    } else if (error instanceof HttpError) {
       status = error.status;
       message = error.message;
-      detail = error.detail ?? null;
+      // Raw exception details can contain upstream credentials or config text.
+      detail = null;
       code = error.code ?? null;
     } else {
       const friendly = friendlyError(error);
@@ -1207,7 +1306,7 @@ export async function createAdmin(options = {}) {
       detail = null;
     }
     if (error?.retryAfter) res.setHeader('retry-after', String(error.retryAfter));
-    sendJson(res, status, { ok: false, error: { message, detail, code } });
+    sendJson(res, status, { ok: false, error: { message, detail, code, ...(status === 429 ? { type: 'rate_limit_error' } : {}) } });
   }
 
   async function handle(req, res) {
@@ -1218,6 +1317,16 @@ export async function createAdmin(options = {}) {
       assertTrustedRequest(req);
       const url = new URL(req.url, 'http://127.0.0.1');
       if (url.pathname === '/healthz') { sendJson(res, 200, { status: 'ok', service: 'admin' }); return; }
+      await refreshRateLimits();
+      if (res.destroyed || res.writableEnded) return;
+      const limits = rateLimits.admin;
+      const release = limiter.acquire([
+        { id: 'admin:requests', maxConcurrent: limits.maxConcurrent, rpm: limits.rpm },
+        { id: 'admin:peer:' + peerFor(req), maxConcurrent: limits.perIpMaxConcurrent, rpm: limits.perIpRpm },
+      ]);
+      // Both events may fire, including on abort; limiter releases are idempotent.
+      res.once('finish', release);
+      res.once('close', release);
       if (url.pathname.startsWith('/assets/') || url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/favicon.ico') {
         await serveStatic(req, res, url.pathname);
         return;

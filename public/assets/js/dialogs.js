@@ -1,4 +1,4 @@
-import { $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals } from "./core.js";
+import { groupRateLimitFields, $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals } from "./core.js";
 /* ---------------- command palette ---------------- */
 function openCommandPalette() {
   const commands = [
@@ -68,6 +68,8 @@ function openCreateGroupModal() {
       '<div class="field span-2"><label>模型 ID 列表 <span class="req">*</span></label><textarea class="textarea" name="models" required placeholder="model-a&#10;model-b&#10;model-c"></textarea><span class="field-hint">每行一个；也可用逗号分隔。保存后可补充上下文、输入模态等元数据。</span></div>' +
       '<div class="field"><label>上下文窗口（可选）</label><input class="input" name="contextWindow" type="number" min="1" placeholder="留空 = 不限制 / 未声明"></div>' +
       '<div class="field"><label>最大输出 tokens（可选）</label><input class="input" name="maxOutputTokens" type="number" min="1" placeholder="留空 = 不限制 / 未声明"></div>' +
+      '<div class="field span-2"><label>分组限流</label><span class="field-hint">默认 0 = 无上限；同组所有 Key 共享预算，RPM 按每 60 秒计数，并发包含 SSE 全生命周期。保存后热生效。</span></div>' +
+      groupRateLimitFields({}, 'create-group-limits') +
       '<div class="field span-2"><label>虚拟 Key 标签</label><input class="input" name="label" placeholder="默认密钥（留空使用默认标签）"><span class="field-hint">会自动生成一个 mr- 开头的虚拟 Key，保存后立即显示。</span></div>' +
       '<div class="form-error span-2" role="alert"></div>' +
       '<div class="form-actions span-2"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('check') + ' 创建分组</button></div></form>',
@@ -76,10 +78,12 @@ function openCreateGroupModal() {
 
 function openEditGroupModal(group) {
   openModal({
-    title: '编辑分组', subtitle: '修改展示名或内部 ID。重命名不会影响已有 Key。', icon: 'edit',
+    title: '编辑分组', subtitle: '修改展示名、内部 ID 或分组限流；保存后立即生效。重命名不会影响已有 Key。', icon: 'edit',
     body: '<form class="form-grid" data-form="group-basic" data-group="' + esc(group.id) + '">' +
       '<div class="field"><label>展示名称</label><input class="input" name="name" value="' + esc(group.name) + '" maxlength="80"></div>' +
       '<div class="field"><label>分组 ID</label><input class="input" name="newId" value="' + esc(group.id) + '" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"><span class="field-hint">修改后 URL 与配置中的 ID 会同步变化。</span></div>' +
+      '<div class="field"><label>分组限流</label><span class="field-hint">0 = 无上限；同组所有 Key 共享预算。RPM 按每 60 秒计数，并发包含 SSE 全生命周期。</span></div>' +
+      groupRateLimitFields(group.rateLimits || {}, 'edit-group-limits') +
       '<label class="switch"><input type="checkbox" name="enabled" ' + (group.enabled ? 'checked' : '') + '><span class="track"></span><span>允许这个分组接受客户端请求</span></label>' +
       '<div class="form-error" role="alert"></div>' +
       '<div class="form-actions"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('check') + ' 保存</button></div></form>',
@@ -174,9 +178,20 @@ function openApiKeyModal(groupId) {
 }
 
 function openKeyLabelModal(key, source, groupId) {
+  const isVirtual = source === 'virtual';
+  let expiryField = '';
+  if (isVirtual) {
+    const date = key.expiresAt ? new Date(key.expiresAt) : null;
+    const pad = number => String(number).padStart(2, '0');
+    const localValue = date && !Number.isNaN(date.getTime())
+      ? String(date.getFullYear()).padStart(4, '0') + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
+      : '';
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expiryField = '<div class="field"><label for="key-expires-at">MR Expires at</label><input class="input" id="key-expires-at" type="datetime-local" name="expiresAt" step="1" value="' + esc(localValue) + '" data-original-local="' + esc(localValue) + '" data-original-expires-at="' + esc(key.expiresAt || '') + '"><span class="field-hint">留空表示永不过期，到期后自动删除此 MR Key。浏览器本地时区：' + esc(timezone) + '；保存时转换为 UTC。</span></div>';
+  }
   openModal({
-    title: '重命名密钥', subtitle: '标签只用于本地识别，不影响鉴权。', icon: 'edit', size: 'narrow',
-    body: '<form class="form-grid" data-form="key-label" data-group="' + esc(groupId) + '" data-source="' + esc(source) + '" data-key-id="' + esc(key.id) + '"><div class="field"><label>标签</label><input class="input" name="label" value="' + esc(key.label || '') + '" maxlength="80" autofocus></div><div class="form-error" role="alert"></div><div class="form-actions"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('check') + ' 保存</button></div></form>',
+    title: isVirtual ? '编辑密钥' : '重命名密钥', subtitle: '标签只用于本地识别，不影响鉴权。', icon: 'edit', size: 'narrow',
+    body: '<form class="form-grid" data-form="key-label" data-group="' + esc(groupId) + '" data-source="' + esc(source) + '" data-key-id="' + esc(key.id) + '"><div class="field"><label>标签</label><input class="input" name="label" value="' + esc(key.label || '') + '" maxlength="80" autofocus></div>' + expiryField + '<div class="form-error" role="alert"></div><div class="form-actions"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('check') + ' 保存</button></div></form>',
   });
 }
 

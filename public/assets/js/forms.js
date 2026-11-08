@@ -1,5 +1,5 @@
 import {
-  $, $$, icon, esc, app, api, closeModal, toast, findGroup, findKey, PROTOCOLS,
+  ADMIN_RATE_LIMIT_DEFAULTS, $, $$, icon, esc, app, api, closeModal, toast, findGroup, findKey, PROTOCOLS,
   PROTOCOL_LABEL, PROTOCOL_AUTH, showTestResult, setTestLoading,
 } from './core.js';
 import { loadState } from './data.js';
@@ -11,11 +11,52 @@ function value(fd, name) {
   const raw = fd.get(name);
   return typeof raw === 'string' ? raw.trim() : '';
 }
+function keyExpiryFromForm(fd, form) {
+  const input = form.querySelector('[name="expiresAt"]');
+  const invalid = () => { throw new Error('MR Expires at 必须是有效的本地日期时间，或留空表示永不过期'); };
+  if (input?.validity && !input.validity.valid) invalid();
+  const text = value(fd, 'expiresAt');
+  if (!text) return null;
+  const parts = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!parts) invalid();
+  const date = new Date(text);
+  const expected = parts.slice(1).map(part => Number(part || 0));
+  const actual = [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours(), date.getMinutes(), date.getSeconds()];
+  // Reject normalized invalid dates and local times skipped by a DST transition.
+  if (Number.isNaN(date.getTime()) || actual.some((part, index) => part !== expected[index])) invalid();
+  // An unchanged wall time must also preserve its instant during a DST overlap.
+  const original = input?.dataset;
+  const localWithSeconds = text.length === 16 ? text + ':00' : text;
+  if (original?.originalExpiresAt && localWithSeconds === original.originalLocal) {
+    const originalDate = new Date(original.originalExpiresAt);
+    if (!Number.isNaN(originalDate.getTime())) return originalDate.toISOString();
+  }
+  return date.toISOString();
+}
 function intOrNull(text) {
   if (text === '' || text === null || text === undefined) return null;
   const number = Number(text);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error('token 数值必须是正整数，或留空表示不限制');
   return number;
+}
+function rateLimitValue(fd, name, label) {
+  const text = value(fd, name);
+  const number = Number(text);
+  if (text === '' || !Number.isSafeInteger(number) || number < 0 || number > 100000) {
+    throw new Error(label + ' 必须是 0–100000 的整数（0 = 无上限）');
+  }
+  return number;
+}
+function groupRateLimitsFromForm(fd) {
+  return {
+    maxConcurrent: rateLimitValue(fd, 'rateMaxConcurrent', '分组最大并发'),
+    rpm: rateLimitValue(fd, 'rateRpm', '分组 RPM'),
+  };
+}
+function responseBytesFromForm(fd) {
+  const bytes = Number(value(fd, 'maxResponseMiB')) * 1048576;
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) throw new Error('最大响应必须大于 0 MiB，且换算后的字节数为安全整数');
+  return bytes;
 }
 function listOf(text) {
   return String(text || '').split(/[\n,]+/).map(item => item.trim()).filter(Boolean);
@@ -107,6 +148,7 @@ export async function handleSubmit(event) {
       const body = {
         id: value(fd, 'id'), name: value(fd, 'name'), upstreamApiKey: value(fd, 'upstreamApiKey'),
         routes, models, label: value(fd, 'label') || '默认密钥',
+        rateLimits: groupRateLimitsFromForm(fd),
       };
       const result = await api('/api/groups', { method: 'POST', body });
       closeModal();
@@ -123,6 +165,7 @@ export async function handleSubmit(event) {
       const body = {
         newId: value(fd, 'newId'), name: value(fd, 'name'),
         enabled: Boolean(form.querySelector('[name="enabled"]')?.checked),
+        rateLimits: groupRateLimitsFromForm(fd),
       };
       if (!body.newId) throw new Error('分组 ID 不能为空');
       const result = await api('/api/groups/' + encodeURIComponent(id), { method: 'PATCH', body });
@@ -130,6 +173,15 @@ export async function handleSubmit(event) {
       await loadState();
       navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');
       toast('分组信息已保存');
+    });
+    return;
+  }
+  if (kind === 'group-limits') {
+    await withForm(form, async () => {
+      const rateLimits = groupRateLimitsFromForm(fd);
+      await api('/api/groups/' + encodeURIComponent(form.dataset.group), { method: 'PATCH', body: { rateLimits } });
+      await loadState();
+      toast('分组限流已保存并热生效');
     });
     return;
   }
@@ -275,10 +327,12 @@ export async function handleSubmit(event) {
       const groupId = form.dataset.group;
       const source = form.dataset.source === 'api' ? 'api-keys' : 'virtual-keys';
       const keyId = form.dataset.keyId;
-      await api('/api/groups/' + encodeURIComponent(groupId) + '/' + source + '/' + encodeURIComponent(keyId), { method: 'PATCH', body: { label: value(fd, 'label') } });
+      const body = { label: value(fd, 'label') };
+      if (form.dataset.source === 'virtual') body.expiresAt = keyExpiryFromForm(fd, form);
+      await api('/api/groups/' + encodeURIComponent(groupId) + '/' + source + '/' + encodeURIComponent(keyId), { method: 'PATCH', body });
       closeModal();
       await loadState();
-      toast('密钥标签已保存');
+      toast(form.dataset.source === 'virtual' ? '密钥已保存' : '密钥标签已保存');
     });
     return;
   }
@@ -311,6 +365,7 @@ export async function handleSubmit(event) {
         port: Number(value(fd, 'port')),
         adminPort: Number(value(fd, 'adminPort')),
         maxBodyBytes: Math.round(Number(value(fd, 'maxBodyMiB')) * 1048576),
+        maxResponseBytes: responseBytesFromForm(fd),
         upstreamTimeoutMs: Number(value(fd, 'upstreamTimeoutMs')),
         requestTimeoutMs: Number(value(fd, 'requestTimeoutMs')),
         accessLog: Boolean(form.querySelector('[name="accessLog"]')?.checked),
@@ -323,6 +378,44 @@ export async function handleSubmit(event) {
       if (nextAdminPort && Number(nextAdminPort) !== Number(app.data?.runtime?.adminPort)) {
         toast('管理台端口已变更', 'info', '重启后请访问 http://127.0.0.1:' + nextAdminPort);
       }
+    });
+    return;
+  }
+  if (kind === 'settings-audit') {
+    await withForm(form, async () => {
+      const fields = {};
+      for (const name of ['requestIp', 'inputTokens', 'outputTokens', 'systemPrompt', 'reasoningTokens', 'model', 'group', 'key']) {
+        fields[name] = Boolean(form.querySelector('[name="fields.' + name + '"]')?.checked);
+      }
+      const bounded = (name, min, max) => {
+        const text = value(fd, name);
+        const number = Number(text);
+        if (!text || !Number.isSafeInteger(number) || number < min || number > max) throw new Error(name + ' 必须是 ' + min + '–' + max + ' 的整数');
+        return number;
+      };
+      const ipSource = value(fd, 'ipSource');
+      if (!['cloudflare', 'socket', 'x-forwarded-for'].includes(ipSource)) throw new Error('请选择有效的 Request IP 来源');
+      const audit = {
+        enabled: Boolean(form.querySelector('[name="enabled"]')?.checked), fields, ipSource,
+        trustedProxies: listOf(fd.get('trustedProxies')),
+        maxEntries: bounded('maxEntries', 1, 2000),
+        maxPromptChars: bounded('maxPromptChars', 1, 65536),
+      };
+      await api('/api/settings', { method: 'PATCH', body: { audit } });
+      await loadState();
+      toast('请求审计已保存并热生效');
+    });
+    return;
+  }
+  if (kind === 'settings-admin-limits') {
+    await withForm(form, async () => {
+      const admin = {};
+      for (const name of Object.keys(ADMIN_RATE_LIMIT_DEFAULTS)) {
+        admin[name] = rateLimitValue(fd, 'admin.' + name, '管理限流 ' + name);
+      }
+      await api('/api/settings', { method: 'PATCH', body: { rateLimits: { admin } } });
+      await loadState();
+      toast('管理限流已保存并热生效');
     });
     return;
   }

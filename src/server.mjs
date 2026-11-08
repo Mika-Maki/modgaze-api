@@ -5,6 +5,8 @@ import { createRouter } from './router.mjs';
 import { createMetrics } from './metrics.mjs';
 import { createAdmin } from './admin.mjs';
 import { loadTLS, createTLSListener } from './tls.mjs';
+import { ConfigStore } from './admin-store.mjs';
+import { createMRExpiryCleaner } from './key-expiry-cleaner.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const runDir = resolve(root, 'run');
@@ -49,7 +51,7 @@ try {
     const metrics = createMetrics();
     let currentCompiled = compiled;
     const logger = record => { if (currentCompiled.accessLog === true) console.log(JSON.stringify(record)); };
-    const server = createRouter(resolved, { logger, onRequest: metrics.record });
+    const server = createRouter(resolved, { logger, onRequest: metrics.record, onAudit: entry => console.log(JSON.stringify({ event: 'audit', ...entry })) });
     const secureServer = tls ? createTLSListener(server, tls) : null;
     async function reload(next) {
       const result = server.reload(next);
@@ -58,6 +60,12 @@ try {
       return { groups: result.groups, models: result.models };
     }
 
+    const store = new ConfigStore({ configPath: path, backupDir: resolve(runDir, 'backups'), reload });
+    const expiryCleaner = createMRExpiryCleaner(store, {
+      onRemoved: removed => console.log(JSON.stringify({ event: 'mr_keys_expired', count: removed.length, groups: [...new Set(removed.map(entry => entry.group))] })),
+      onError: () => console.error(JSON.stringify({ event: 'mr_expiry_cleanup_error' })),
+    });
+    await expiryCleaner.run().catch(() => console.error(JSON.stringify({ event: 'mr_expiry_cleanup_error' })));
     let admin = null;
     let secureAdmin = null;
     let stopping = false;
@@ -65,7 +73,7 @@ try {
       if (stopping) return;
       stopping = true;
       const listeners = [server, secureServer, admin, secureAdmin].filter(Boolean);
-      Promise.all(listeners.map(s => new Promise(resolveClose => s.close(resolveClose)))).then(() => process.exit(0));
+      Promise.all([expiryCleaner.close(), ...listeners.map(s => new Promise(resolveClose => s.close(resolveClose)))]).then(() => process.exit(0));
       for (const listener of listeners) listener.closeIdleConnections();
       setTimeout(() => { for (const listener of listeners) listener.closeAllConnections(); process.exit(0); }, 10000).unref();
     };
@@ -102,14 +110,17 @@ try {
         try {
           admin = await createAdmin({
             configPath: path,
+            store,
             runDir,
             projectRoot: root,
             adminPort,
             tlsAllowedHosts: raw.adminHttps?.allowedHosts ?? [],
             allowedHosts: raw.adminAllowedHosts ?? [],
+            publicOrigin: raw.adminPublicOrigin,
             routerPort: () => server.address()?.port ?? compiled.port,
             reload,
             metrics,
+            requestAudit: server.requestAudit,
           });
           await new Promise((resolveListen, rejectListen) => {
             admin.once('error', rejectListen);

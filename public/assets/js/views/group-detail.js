@@ -1,4 +1,4 @@
-import { $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals } from "../core.js";
+import { formatRateLimit, groupRateLimitFields, $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals } from "../core.js";
 /* ---------------- group detail ---------------- */
 function renderGroupDetailPage() {
   const group = findGroup(app.route.id);
@@ -47,9 +47,19 @@ function groupOverviewTab(group, stats) {
     '<section class="panel"><div class="panel-head"><div><h2 class="panel-title">协议路由</h2><p class="panel-sub">分组级上游目标</p></div><a class="btn btn-sm btn-ghost" href="#/groups/' + encodeURIComponent(group.id) + '/routes">管理路由 ' + icon('chevron-right') + '</a></div>' +
     '<div class="panel-body">' + (routeList ? '<div class="route-list">' + routeList + '</div>' : emptyState('还没有协议路由', '至少配置一个 chat / responses / messages 路由后，分组才能转发请求。', 'link', '添加路由', 'edit-route', { group: group.id, protocol: group.protocols[0] || 'chat' })) + '</div></section>' +
     '</div><div class="settings-stack">' +
+    groupLimitsPanel(group) +
     '<section class="panel"><div class="panel-head"><div><h2 class="panel-title">分组脉冲</h2><p class="panel-sub">当前进程累计</p></div><span class="badge badge-cyan">' + icon('activity') + ' live</span></div><div class="panel-body"><div class="inline-stats"><div class="inline-stat"><b>' + fmtNum(stats.requests) + '</b><span>请求</span></div><div class="inline-stat"><b>' + fmtNum(stats.errors) + '</b><span>错误</span></div><div class="inline-stat"><b>' + errorRate + '</b><span>错误率</span></div></div><div class="divider" style="margin:16px 0"></div><div class="info-box">' + icon('key') + '<span>虚拟 Key 共 <b>' + group.virtualKeys.length + '</b> 个，直通 Key 共 <b>' + group.apiKeys.length + '</b> 个。虚拟 Key 会替换上游凭证；直通 Key 会原样发送到上游。</span></div></div></section>' +
     '<section class="panel"><div class="panel-head"><div><h2 class="panel-title">备注</h2><p class="panel-sub">用途、限流或维护提示</p></div></div><div class="panel-body"><form class="note-editor" data-form="group-note" data-group="' + esc(group.id) + '"><textarea class="textarea" name="note" placeholder="例如：官方 aihub 通道，月预算 200，仅用于 Grok / Kimi…">' + esc(group.note || '') + '</textarea><div class="flex justify-between items-center gap-2"><span class="field-hint">保存在本地配置中，不会发送给上游。</span><button class="btn btn-sm" type="submit">' + icon('check') + ' 保存备注</button></div><div class="form-error" role="alert"></div></form></div></section>' +
     '</div></div>';
+}
+
+function groupLimitsPanel(group) {
+  const limits = group.rateLimits || {};
+  return '<section class="panel"><div class="panel-head"><div><h2 class="panel-title">分组 API 限流</h2><p class="panel-sub">同组所有 Key 共享，保存后热生效，无需重启。</p></div><span class="badge badge-green">热生效</span></div><div class="panel-body">' +
+    '<div class="info-box">' + icon('activity') + '<span>当前并发：<b>' + formatRateLimit(limits.maxConcurrent) + '</b>；RPM：<b>' + formatRateLimit(limits.rpm) + '</b>。RPM 为每 60 秒请求数，并发包含 SSE 全生命周期。0 = 无上限。</span></div>' +
+    '<form class="settings-form mt-3" data-form="group-limits" data-group="' + esc(group.id) + '"><div class="form-grid two">' +
+    groupRateLimitFields(limits, 'detail-group-limits') +
+    '</div><div class="form-error" role="alert"></div><div class="form-actions"><button class="btn btn-primary" type="submit">' + icon('check') + ' 保存分组限流</button></div></form></div></section>';
 }
 
 function groupRoutesTab(group) {
@@ -104,15 +114,19 @@ function groupKeysTab(group) {
 function keyRow(group, key, source) {
   const typeLabel = source === 'virtual' ? '虚拟' : '直通';
   const revealable = Boolean(key.value);
+  const expiryDate = source === 'virtual' && key.expiresAt ? new Date(key.expiresAt) : null;
+  const expiryLabel = expiryDate && !Number.isNaN(expiryDate.getTime())
+    ? (expiryDate.getTime() <= Date.now() ? '已过期 · ' : '到期 · ') + expiryDate.toLocaleString()
+    : '永不过期';
   const search = [key.label, key.masked, key.id, group.id, group.name, typeLabel].join(' ').toLowerCase();
-  const actions = '<button class="icon-btn" data-action="edit-key-label" data-key-id="' + esc(key.id) + '" data-source="' + source + '" data-group="' + esc(group.id) + '" title="重命名">' + icon('edit') + '</button>' +
+  const actions = '<button class="icon-btn" data-action="edit-key-label" data-key-id="' + esc(key.id) + '" data-source="' + source + '" data-group="' + esc(group.id) + '" title="' + (source === 'virtual' ? '编辑标签与到期时间' : '重命名') + '">' + icon('edit') + '</button>' +
     (source === 'virtual' ? '<button class="icon-btn" data-action="rotate-key" data-key-id="' + esc(key.id) + '" data-group="' + esc(group.id) + '" title="轮换">' + icon('rotate') + '</button>' : '') +
     '<button class="icon-btn" data-action="delete-key" data-key-id="' + esc(key.id) + '" data-source="' + source + '" data-group="' + esc(group.id) + '" title="删除">' + icon('trash') + '</button>';
   const secretControls = revealable ? '<button class="icon-btn" data-action="reveal-key" data-key-id="' + esc(key.id) + '" title="显示 / 隐藏">' + icon('eye') + '</button><button class="icon-btn" data-action="copy-key" data-key-id="' + esc(key.id) + '" title="复制">' + icon('copy') + '</button>' : '<span class="badge">不可读取</span>';
   return '<div class="key-row" data-key-row data-key-id="' + esc(key.id) + '" data-search="' + esc(search) + '">' +
     '<div class="key-label"><b>' + esc(key.label || typeLabel + ' Key') + '</b><span>' + (key.source === 'env' ? 'env · ' + esc(key.env || '') : typeLabel + ' · 内联') + '</span></div>' +
     '<div class="key-secret"><code data-key-text="' + esc(key.id) + '">' + esc(key.masked) + '</code>' + secretControls + '</div>' +
-    '<div class="key-meta"><span>' + (key.createdAt ? timeAgo(key.createdAt) : '创建时间未知') + '</span><span>' + (source === 'virtual' ? '客户端使用' : '直通上游') + '</span></div>' +
+    '<div class="key-meta"><span>' + (key.createdAt ? timeAgo(key.createdAt) : '创建时间未知') + '</span><span>' + (source === 'virtual' ? esc(expiryLabel) : '直通上游') + '</span></div>' +
     '<div class="key-actions">' + actions + '</div></div>';
 }
 

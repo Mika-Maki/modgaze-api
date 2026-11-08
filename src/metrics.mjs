@@ -55,6 +55,7 @@ export function createMetrics({ recentLimit = 200, bucketMs = 60000, bucketCount
       method: entry.method ?? null,
       protocol: entry.protocol ?? 'local',
       status,
+      outcome: typeof entry.outcome === 'string' ? entry.outcome : (status >= 400 ? 'error' : 'success'),
       durationMs,
       group: entry.group ?? null,
       model: entry.model ?? null,

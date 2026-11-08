@@ -12,16 +12,24 @@ function configuration(baseURL, extra = {}) {
   return { ...extra, groups: [{ id: 'test', apiKeys: ['test-key'], routes: { responses: { baseURL } }, models: [{ id: 'model' }] }] };
 }
 
-test('lifecycle uses explicit group route despite model override', async t => {
-  let hits = 0;
-  const baseURL = await serve(t, http.createServer((req, res) => { hits++; res.end('{"id":"resp_1"}'); }));
-  const config = configuration(baseURL);
-  config.groups[0].models[0].routes = { responses: { baseURL: 'http://127.0.0.1:1/v1' } };
+test('lifecycle requires creation and stays on its model route despite a group default', async t => {
+  const paths = [];
+  const baseURL = await serve(t, http.createServer((req, res) => {
+    paths.push(req.url); req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"id":"resp_1"}');
+  }));
+  const config = configuration(baseURL + '/group/v1');
+  config.groups[0].models[0].routes = { responses: { baseURL: baseURL + '/model/v1' } };
   const router = await serve(t, createRouter(config));
-  const response = await fetch(router + '/v1/responses/resp_1', { headers: { authorization: 'Bearer test-key' } });
+  const headers = { authorization: 'Bearer test-key' };
+  assert.equal((await fetch(router + '/v1/responses/resp_1', { headers })).status, 404);
+  assert.equal(paths.length, 0);
+  const created = await fetch(router + '/v1/responses', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'model', input: 'hello' }) });
+  assert.equal(created.status, 200); await created.arrayBuffer();
+  const response = await fetch(router + '/v1/responses/resp_1', { headers });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).id, 'resp_1');
-  assert.equal(hits, 1);
+  assert.deepEqual(paths, ['/model/v1/responses', '/model/v1/responses/resp_1']);
 });
 
 test('body upload and upstream response share one total deadline', async t => {

@@ -27,7 +27,7 @@ curl -fsS http://127.0.0.1:8787/v1/models \
   -H "Authorization: Bearer <虚拟 Key>"
 ```
 
-`npm run import` 生成的是占位配置：单个分组指向不可达的 example.invalid，附带一次性打印的本地 key，只用于验证启动、鉴权和 /v1/models；换成真实上游前不会成功转发生成请求。config/local.json 内含真实 key，不要上传或提交。停止服务用 `npm run service:stop`，日志在 run/modgaze.log。需要后端 HTTPS（8786 / 8789）时见 [docs/https.md](docs/https.md)。
+`npm run import` 生成的是占位配置：单个分组指向不可达的 example.invalid，附带一次性打印的本地 key，只用于验证启动、鉴权和 /v1/models；换成真实上游前不会成功转发生成请求。config/local.json 内含真实 key，不要上传或提交。停止服务用 `npm run service:stop`，日志在 run/modgaze.log。需要后端 HTTPS（8786 / 8789）时见 [docs/https.md](docs/https.md)；只把 API 8787 通过 Cloudflare Tunnel 暴露时见 [docs/tunnel.md](docs/tunnel.md)。
 
 ## 启动与管理
 
@@ -70,7 +70,7 @@ npm run service:stop
 - **系统与维护**：修改监听地址、路由端口、管理台端口、请求体上限、超时和访问日志；热重载配置；重启 service 托管进程；查看运行时与文件路径。
 - **备份与恢复**：每次写配置前自动备份，保留最近 40 份；可手动打标签、下载、恢复、删除。
 - **配置导入导出**：导出脱敏或完整配置；粘贴/选择 JSON 先校验再导入；校验失败不会写盘。
-- **审计**：登录、分组、路由、模型、密钥、设置、备份等动作只保存在内存，重启清空，不记录任何 Key 或密码。
+- **审计**：保留登录、分组、设置等管理动作历史；新增可配置请求审计，支持 Request IP、Input / Output / Reasoning Token、System Prompt、Model、Group、Key 指纹独立开关，并按 Tunnel 传来的真实 IP 分类。请求审计默认关闭，配置热生效；详见 [请求审计与 Tunnel 真实 IP](docs/request-audit.md)。
 
 ### 视觉系统与动效
 
@@ -86,6 +86,10 @@ npm run service:stop
 - 12 小时绝对过期、2 小时空闲过期；管理员密码变更或本地重置会立即让旧会话失效；服务重启后需重新登录。
 - 连续登录失败会触发递进限流；Host 和 Origin 都会校验，防止 DNS rebinding 与跨站请求。
 - 管理台只监听 `127.0.0.1`；如需远程访问，请自行使用 SSH 隧道或可信反向代理，不要把 8788 直接暴露到公网。
+
+## 按组并发 / RPM 与管理保护
+
+上游分组的新建、编辑及详情页均可设置共享并发/RPM，`0` 表示无上限（默认）；同组全部 Key 共用配额，不同组独立。管理端另有全局、每来源和登录限额，支持 0 无限；保存热生效，429 返回 Retry-After，轮询自动退避。8787 明文与 Tunnel 回源方式保持不变。配置、默认值及兼容变化见 [安全修复与按组限流](docs/security-limits.md)。
 
 ## API
 
@@ -174,10 +178,10 @@ npm run service:restart
 - 不裁剪 messages / input / system / instructions，也不创建隐藏系统提示词。完整会话、工具调用与结果、结构化输出、缓存控制、未知扩展字段按原生 JSON 透传。
 - Chat 的 reasoning_effort、Responses 的 reasoning、Anthropic 的 thinking / output_config 原样转发，显式 null / false / 0 保留。不强制全局 high，不把某个模型的 max 当所有模型通用能力。
 - 图片支持各自协议的原生表示：Chat image_url（远端 URL / data URL）、Responses input_image、Anthropic image.source（base64 / URL）。路由器不下载图片、不转码、不剥离图片块；是否支持该输入由上游模型决定。
-- 默认无修改时请求正文按原字节转发；配置 upstreamModel 或 defaults 才重新编码 JSON。响应 JSON 和 SSE 都原字节流转发，包括工具增量、usage、reasoning/signature、事件名和结束帧，带背压及客户端断开取消。
+- 请求 JSON 在校验后规范化转发，避免重复 model / token / 对象引用字段被上游按不同规则解释；保留原生字段语义，配置 upstreamModel 或 defaults 时再应用对应覆盖/默认值。响应 JSON 和 SSE 保持流式字节转发（已配置凭据去敏除外），包括工具增量、usage、reasoning/signature、事件名和结束帧，带背压、解压后体积限制及客户端断开取消。
 - /v1/models 给出 context_window、max_output_tokens、input_modalities、reasoning_efforts、metadata_source、supported_endpoints。上下文容量是配置/本地适配器声明，**不是远端实测**；不会把容量误填成生成 max_tokens，不做估算 token 截断。
 - reasoningEfforts 作为发现元数据保留原映射（含 null），不是自动转换指令。客户端仍应发送所用协议的合法参数；例如 off:null 不代表必然关闭上游思考。
-- Responses previous_response_id、conversation、store 等字段直接交给上游；路由器不存对话、不把 Response ID 跨 key 搬运。生命周期请求没有 model，优先使用明确配置的 group.routes.responses；未配置组级目标时，仅当所有模型的 Responses 目标唯一才推导转发，否则返回 400。同组多个目标时，组级路由必须指向该 Response 所属上游。
+- Responses 生命周期和 previous_response_id 通过调用 Key、分组、创建时模型路由及上游凭据指纹校验所有权；不同 Key 不互读，未知对象返回 404。所有权账本仅在内存保留（最多 10000 条，1 小时），重启前/过期/淘汰对象拒绝访问；未实现归属映射的 conversation / item_reference 引用拒绝，不再直接透传。
 
 ## 服务端配置
 
@@ -244,6 +248,8 @@ baseURL 使用 API 前缀而不是完整端点：/v1 不再重复追加；根域
 - test/router.test.mjs、test/virtual-keys.test.mjs、test/regressions.test.mjs：路由与脱敏回归。
 - test/admin-auth.test.mjs、test/admin.test.mjs：密码哈希、登录/CSRF、管理 CRUD、备份、上游测试回归。
 - docs/https.md：HTTPS/TLS 配置教程（证书生成、监听配置、客户端信任、管理台 TLS）。
+- docs/tunnel.md：Cloudflare Tunnel 只暴露 API 8787 的配置、常驻脚本与 fake-ip 处理。
+- tunnelup.sh：一键启动 Modgaze + Cloudflare named tunnel（token 模式），支持 start/stop/status/url。
 - config/example.json：无真实密钥的独立配置示例。
 
 验证使用 npm test；它不验证真实供应商当前可用性、实际上下文窗口或账单。远端鉴权、余额、模型权限仍由对应供应商判断。

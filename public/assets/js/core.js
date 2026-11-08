@@ -28,6 +28,9 @@ const app = {
   loading: true,
   offline: false,
   polling: null,
+  pollStatsInFlight: false,
+  pollStatsRetryAt: 0,
+  adminRetryAt: 0,
   lastTick: 0,
   search: '',
   keySearch: '',
@@ -121,7 +124,36 @@ const summary = () => app.data?.summary || {};
 const settings = () => app.data?.settings || {};
 const runtime = () => app.data?.runtime || {};
 
+/* ---------------- rate-limit controls ---------------- */
+const ADMIN_RATE_LIMIT_DEFAULTS = Object.freeze({
+  maxConcurrent: 64, rpm: 600, perIpMaxConcurrent: 32, perIpRpm: 300,
+  loginMaxConcurrent: 2, loginRpm: 10,
+});
+const formatRateLimit = value => Number(value ?? 0) === 0 ? '无上限' : fmtNum(value);
+function rateLimitField(name, label, value = 0, prefix = 'limit') {
+  const id = prefix + '-' + name;
+  return '<div class="field"><label for="' + esc(id) + '">' + esc(label) + '</label>' +
+    '<input class="input" id="' + esc(id) + '" name="' + esc(name) + '" type="number" min="0" max="100000" step="1" value="' + esc(value) + '" list="' + esc(id) + '-options" required>' +
+    '<datalist id="' + esc(id) + '-options"><option value="0" label="无上限">无上限</option></datalist>' +
+    '<span class="field-hint">0 = 无上限；可手动输入或选择无上限，最大 100000。</span></div>';
+}
+function groupRateLimitFields(limits = {}, prefix = 'group-limits') {
+  return rateLimitField('rateMaxConcurrent', '分组最大并发', limits.maxConcurrent ?? 0, prefix) +
+    rateLimitField('rateRpm', '分组 RPM（每 60 秒）', limits.rpm ?? 0, prefix);
+}
+
 /* ---------------- API ---------------- */
+function retryAfterSeconds(raw) {
+  if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+  const text = String(raw).trim();
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const seconds = Number(text);
+    return Number.isFinite(seconds) ? seconds : null;
+  }
+  if (!/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i.test(text)) return null;
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp) ? Math.max(0, (timestamp - Date.now()) / 1000) : null;
+}
 async function api(path, { method = 'GET', body, csrf = true } = {}) {
   const headers = { accept: 'application/json' };
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -142,6 +174,12 @@ async function api(path, { method = 'GET', body, csrf = true } = {}) {
     error.code = payload?.error?.code;
     error.detail = payload?.error?.detail;
     error.payload = payload;
+    // Surface the server delay in seconds, without replaying any request (especially writes).
+    error.retryAfter = retryAfterSeconds(response.headers?.get('retry-after'));
+    if (response.status === 429) {
+      const seconds = error.retryAfter ?? 4;
+      app.adminRetryAt = Math.max(app.adminRetryAt, Date.now() + Math.max(1, seconds) * 1000);
+    }
     if (response.status === 401 && app.authenticated && unauthorizedHandler && !path.startsWith('/api/auth/')) unauthorizedHandler();
     throw error;
   }
@@ -353,4 +391,4 @@ function applyKeyReveals() {
 }
 
 
-export { $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals };
+export { ADMIN_RATE_LIMIT_DEFAULTS, formatRateLimit, rateLimitField, groupRateLimitFields, retryAfterSeconds, $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals };

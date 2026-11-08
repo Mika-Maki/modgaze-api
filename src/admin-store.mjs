@@ -3,6 +3,9 @@ import {
   atomicWriteConfig, createBackup, listBackups, readBackup, removeBackup, readRawConfig, validateConfig,
 } from './config.mjs';
 import { PROTOCOLS } from './router.mjs';
+import { normalizeGroupRateLimits, normalizeRateLimits } from './rate-limit.mjs';
+import { normalizeMRExpiresAt } from './key-expiry.mjs';
+import { normalizeAuditConfig } from './request-audit.mjs';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const DANGEROUS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -70,6 +73,7 @@ export function listGroupKeys(rawGroup, resolvedGroup, field) {
       masked: isEnv ? 'env:' + entry.env : maskSecret(resolved),
       label: typeof info.label === 'string' ? info.label : null,
       createdAt: typeof info.createdAt === 'string' ? info.createdAt : null,
+      ...(field === 'virtualApiKeys' ? { expiresAt: normalizeMRExpiresAt(info.expiresAt) } : {}),
     };
   });
 }
@@ -123,6 +127,7 @@ export function sanitizeGroup(rawGroup, resolvedGroup) {
     name: typeof rawGroup.name === 'string' && rawGroup.name ? rawGroup.name : rawGroup.id,
     note: typeof rawGroup.note === 'string' ? rawGroup.note : '',
     enabled: rawGroup.enabled !== false,
+    rateLimits: normalizeGroupRateLimits(rawGroup.rateLimits),
     upstreamKey: describeSecret(rawGroup.upstreamApiKey),
     routes,
     models,
@@ -145,9 +150,12 @@ export function sanitizeSettings(raw, compiled, runtime = {}) {
     adminPort: runtime.adminPort ?? null,
     configuredAdminPort: Number.isInteger(raw.adminPort) ? raw.adminPort : (runtime.adminPort ?? 8788),
     maxBodyBytes: compiled.maxBodyBytes,
+    maxResponseBytes: compiled.maxResponseBytes ?? 256 * 1024 * 1024,
+    rateLimits: normalizeRateLimits(compiled.rateLimits ?? raw.rateLimits),
     upstreamTimeoutMs: compiled.upstreamTimeoutMs,
     requestTimeoutMs: compiled.requestTimeoutMs,
     accessLog: compiled.accessLog === true,
+    audit: normalizeAuditConfig(compiled.audit ?? raw.audit),
     groups: raw.groups.length,
     activeGroups: raw.groups.filter(group => group.enabled !== false).length,
     models: raw.groups.reduce((total, group) => total + (group.models?.length ?? 0), 0),
@@ -164,6 +172,7 @@ export function friendlyError(error) {
     [/Invalid or duplicate group id/i, '分组 ID 为空或重复'],
     [/Invalid group enabled flag/i, '分组启用状态必须是布尔值'],
     [/Group requires apiKeys or virtualApiKeys/i, '分组至少需要一个访问密钥（虚拟 Key 或直通 Key）'],
+    [/Invalid MR (?:Expires at|expiry metadata)/i, 'MR Expires at 无效，请提供带时区的日期时间；留空表示永不过期'],
     [/Invalid API key/i, '访问密钥格式无效：不能为空或包含空白字符'],
     [/Duplicate API key across groups/i, '访问密钥与其他分组重复；同一密钥只能属于一个分组'],
     [/Invalid upstreamApiKey/i, '上游 API Key 格式无效'],
@@ -185,19 +194,25 @@ export function friendlyError(error) {
     [/Model has no available route/i, '模型没有可用的协议路由'],
     [/Invalid listen address/i, '监听地址或端口无效'],
     [/Invalid maxBodyBytes/i, '最大请求体大小无效'],
+    [/Invalid maxResponseBytes/i, '最大响应体大小无效'],
+    [/requestAudit\.trustedProxies/i, '审计可信代理必须是精确 IP 地址，不接受 CIDR、主机名或端口'],
+    [/requestAudit\.maxEntries/i, '审计内存条数必须在 1–2000 之间'],
+    [/requestAudit\.maxPromptChars/i, '审计 System Prompt 字符上限必须在 1–65536 之间'],
+    [/requestAudit/i, '审计配置无效：检查字段名称、布尔开关及 IP 来源'],
+    [/rateLimits/i, '限流配置无效：仅支持已知字段及有效的非负安全整数'],
     [/Invalid requestTimeoutMs/i, '总请求超时无效'],
     [/Invalid upstreamTimeoutMs/i, '上游空闲超时无效'],
     [/Upstream credential must not be a virtual API key/i, '上游 Key 不能与虚拟 Key 相同'],
-    [/Required API key environment variable is missing: (.+)$/i, (match) => '环境变量 ' + match[1] + ' 未设置，无法解析密钥'],
+    [/Required API key environment variable is missing/i, '密钥环境变量未设置，无法解析配置'],
     [/Config must have mode 0600/i, '配置文件权限必须为 0600（chmod 600 config/local.json）'],
     [/Admin password file must have mode 0600/i, '管理员密码文件权限必须为 0600'],
     [/Invalid configuration JSON/i, '配置文件不是合法 JSON'],
   ];
   for (const [pattern, replacement] of table) {
     const match = raw.match(pattern);
-    if (match) return { message: typeof replacement === 'function' ? replacement(match) : replacement, detail: raw };
+    if (match) return { message: typeof replacement === 'function' ? replacement(match) : replacement, detail: null };
   }
-  return { message: raw || '操作失败', detail: raw };
+  return { message: '操作失败，请在本机检查配置或服务日志', detail: null };
 }
 
 export function assertGroupId(id) {
@@ -364,6 +379,7 @@ export class ConfigStore {
     this.backupDir = backupDir;
     this.reload = reload;
     this.chain = Promise.resolve();
+    this.revision = 0;
   }
 
   async read() {
@@ -388,7 +404,7 @@ export class ConfigStore {
     }
     const { resolved, compiled, summary } = validateConfig(raw);
     const backup = await createBackup(this.configPath, this.backupDir, { label }).catch(error => {
-      throw httpError(500, '无法创建配置备份，已取消写入', error.message);
+      throw httpError(500, '无法创建配置备份，已取消写入');
     });
     await atomicWriteConfig(this.configPath, raw);
     try {
@@ -396,8 +412,9 @@ export class ConfigStore {
     } catch (error) {
       await atomicWriteConfig(this.configPath, before.raw).catch(() => {});
       await Promise.resolve(this.reload(before.resolved)).catch(() => {});
-      throw httpError(500, '配置已回滚：路由热重载失败', error instanceof Error ? error.message : String(error));
+      throw httpError(500, '配置已回滚：路由热重载失败');
     }
+    this.revision += 1;
     return { raw, resolved, compiled, summary, backup };
   }
 
@@ -410,6 +427,31 @@ export class ConfigStore {
       const saved = await this.apply(raw, before, label);
       return { ...saved, before };
     });
+  }
+
+  async removeExpiredMRKeys(now = Date.now()) {
+    if (!Number.isFinite(now)) throw new Error('Invalid MR expiry cleanup time');
+    const removed = [];
+    const result = await this.update((raw, before) => {
+      for (const group of raw.groups) {
+        const resolved = resolvedGroupById(before.resolved, group.id);
+        for (let index = (group.virtualApiKeys?.length ?? 0) - 1; index >= 0; index--) {
+          const key = resolved?.virtualApiKeys?.[index];
+          if (typeof key !== 'string') continue;
+          const keyId = hashKey(key);
+          const expiry = normalizeMRExpiresAt(group.virtualKeyMeta?.[keyId]?.expiresAt);
+          if (expiry === null || Date.parse(expiry) > now) continue;
+          group.virtualApiKeys.splice(index, 1);
+          removeKeyMeta(group, 'virtualApiKeys', keyId);
+          removed.push({ group: group.id, keyId });
+        }
+        // Delete the expired credential, not its routes/models or the whole group.
+        // Empty groups remain manageable but cannot accept traffic until re-enabled.
+        if (!(group.apiKeys?.length || group.virtualApiKeys?.length)) group.enabled = false;
+      }
+      return removed.length > 0;
+    }, { label: 'key.expire' });
+    return { ...result, removed };
   }
 
   replace(raw, { label = 'replace' } = {}) {

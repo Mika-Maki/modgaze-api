@@ -1,4 +1,5 @@
 import { chmod, copyFile, mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { compileConfig } from './router.mjs';
@@ -6,12 +7,20 @@ import { compileConfig } from './router.mjs';
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isEnvRef = value => isObject(value) && typeof value.env === 'string' && !Object.hasOwn(value, '__proto__');
 
+// Open first, then check the same inode. O_NOFOLLOW rejects planted symlinks
+// without a check/use race on the final path component.
+async function readPrivateFile(path, label) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(label + ' must be a regular file');
+    if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error(label + ' must have mode 0600');
+    return await handle.readFile('utf8');
+  } finally { await handle.close(); }
+}
+
 export async function readRawConfig(path) {
-  const info = await stat(path);
-  if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) {
-    throw new Error('Config must have mode 0600 (chmod 600 config/local.json)');
-  }
-  return JSON.parse(await readFile(path, 'utf8'));
+  return JSON.parse(await readPrivateFile(path, 'Config'));
 }
 
 export function resolveSecretValue(value) {
@@ -138,9 +147,7 @@ export async function listBackups(directory) {
 
 export async function readBackup(directory, name) {
   const path = backupPath(directory, name);
-  const info = await stat(path);
-  if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error('Backup file must have mode 0600');
-  return JSON.parse(await readFile(path, 'utf8'));
+  return JSON.parse(await readPrivateFile(path, 'Backup file'));
 }
 
 export async function removeBackup(directory, name) {
