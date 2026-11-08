@@ -1,11 +1,15 @@
 # Local runtime and credentials
 config/*.json
+config/*.json.*
+config/*.tmp
 !config/example.json
+/router-preparetion.md
 *.private.json
 .env
 .env.*
 *.pem
 *.key
+config/tls/
 *.log
 run/
 

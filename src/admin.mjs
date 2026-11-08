@@ -19,6 +19,7 @@ import { readBackup as readBackupFile, validateConfig } from './config.mjs';
 import { secretRedactor } from './secrets.mjs';
 
 const COOKIE_NAME = 'mr_admin_session';
+const cookieName = req => req.socket.encrypted ? COOKIE_NAME + '_tls' : COOKIE_NAME;
 const SESSION_ABSOLUTE_MS = 12 * 60 * 60 * 1000;
 const SESSION_IDLE_MS = 2 * 60 * 60 * 1000;
 const BODY_LIMIT = 8 * 1024 * 1024;
@@ -53,11 +54,11 @@ function parseCookies(header) {
 }
 
 function setSessionCookie(res, raw, maxAge = Math.floor(SESSION_ABSOLUTE_MS / 1000)) {
-  res.setHeader('set-cookie', COOKIE_NAME + '=' + raw + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + maxAge);
+  res.setHeader('set-cookie', cookieName(res.req) + '=' + raw + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + maxAge + (res.req.socket.encrypted ? '; Secure' : ''));
 }
 
 function clearSessionCookie(res) {
-  res.setHeader('set-cookie', COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+  res.setHeader('set-cookie', cookieName(res.req) + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' + (res.req.socket.encrypted ? '; Secure' : ''));
 }
 
 function sendJson(res, status, payload, headers = {}) {
@@ -148,6 +149,10 @@ export async function createAdmin(options = {}) {
   const projectRoot = resolve(options.projectRoot ?? fileURLToPath(new URL('../', import.meta.url)));
   const publicDir = resolve(options.publicDir ?? fileURLToPath(new URL('../public/', import.meta.url)));
   const adminPort = Number(options.adminPort ?? 8788);
+  const tlsAllowedHosts = options.tlsAllowedHosts ?? [];
+  const httpAllowedHosts = options.allowedHosts ?? [];
+  if (!Array.isArray(httpAllowedHosts) || httpAllowedHosts.some(h => typeof h !== 'string' || !h || [...h].some(c => !'abcdefghijklmnopqrstuvwxyz0123456789.:-[]'.includes(c.toLowerCase())))) throw new Error('Invalid admin allowedHosts');
+  if (!Array.isArray(tlsAllowedHosts) || tlsAllowedHosts.some(h => typeof h !== 'string' || !h || [...h].some(c => !'abcdefghijklmnopqrstuvwxyz0123456789.:-[]'.includes(c.toLowerCase())))) throw new Error('Invalid TLS allowedHosts');
   const authPath = resolve(options.authPath ?? join(dirname(configPath), 'admin-auth.private.json'));
   const backupDir = join(runDir, 'backups');
   const routerPort = typeof options.routerPort === 'function' ? options.routerPort : () => options.routerPort;
@@ -187,9 +192,10 @@ export async function createAdmin(options = {}) {
     if (audit.length > 250) audit.length = 250;
   }
 
-  function createSession() {
+  function createSession(req) {
     const raw = randomBytes(32).toString('hex');
     const record = {
+      secureTransport: Boolean(req.socket.encrypted),
       csrf: randomBytes(32).toString('hex'),
       createdAt: Date.now(),
       lastSeen: Date.now(),
@@ -200,11 +206,11 @@ export async function createAdmin(options = {}) {
   }
 
   function sessionFromRequest(req) {
-    const raw = parseCookies(req.headers.cookie)[COOKIE_NAME];
+    const raw = parseCookies(req.headers.cookie)[cookieName(req)];
     if (typeof raw !== 'string' || !/^[a-f0-9]{64}$/.test(raw)) return null;
     const hash = digest(raw);
     const record = sessions.get(hash);
-    if (!record) return null;
+    if (!record || record.secureTransport !== Boolean(req.socket.encrypted)) return null;
     const now = Date.now();
     if (now > record.expiresAt || now - record.lastSeen > SESSION_IDLE_MS) {
       sessions.delete(hash);
@@ -216,7 +222,7 @@ export async function createAdmin(options = {}) {
   }
 
   function destroySession(req) {
-    const raw = parseCookies(req.headers.cookie)[COOKIE_NAME];
+    const raw = parseCookies(req.headers.cookie)[cookieName(req)];
     if (raw) sessions.delete(digest(raw));
   }
 
@@ -289,16 +295,23 @@ export async function createAdmin(options = {}) {
     return new Set(['127.0.0.1:' + port, 'localhost:' + port, '[::1]:' + port]);
   }
 
-  function allowedOrigins(port) {
-    return new Set(['http://127.0.0.1:' + port, 'http://localhost:' + port, 'http://[::1]:' + port]);
-  }
-
   function assertTrustedRequest(req) {
-    const port = currentAdminPort();
+    const encrypted = Boolean(req.socket.encrypted);
+    const port = encrypted ? req.socket.localPort : currentAdminPort();
     const host = String(req.headers.host ?? '').toLowerCase();
-    if (!allowedHosts(port).has(host)) throw httpError(403, '非法的 Host 请求头');
+    const hosts = allowedHosts(port);
+    {
+      const localAddress = String(req.socket.localAddress ?? '').replace(/^::ffff:/, '');
+      for (const name of [localAddress, ...(encrypted ? tlsAllowedHosts : httpAllowedHosts)]) {
+        if (!name) continue;
+        const hostname = name.includes(':') && !name.startsWith('[') ? '[' + name + ']' : name;
+        hosts.add(hostname.toLowerCase() + ':' + port);
+      }
+    }
+    if (!hosts.has(host)) throw httpError(403, '非法的 Host 请求头');
     const origin = req.headers.origin;
-    if (origin && !allowedOrigins(port).has(String(origin))) throw httpError(403, '非法的请求来源');
+    const origins = new Set([(encrypted ? 'https://' : 'http://') + host]);
+    if (origin && !origins.has(String(origin))) throw httpError(403, '非法的请求来源');
     if (req.headers['sec-fetch-site'] === 'cross-site') throw httpError(403, '拒绝跨站请求');
   }
 
@@ -524,6 +537,8 @@ export async function createAdmin(options = {}) {
       return true;
     }
     if (path === '/api/auth/setup' && method === 'POST') {
+      const peer = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
+      if (peer !== '127.0.0.1' && peer !== '::1') throw httpError(403, '请先在服务器本机设置管理员密码');
       const current = await authState();
       if (current.configured) throw httpError(409, current.error ? '管理员密码文件无效，请本地重置后再试' : '管理员密码已经设置，请登录');
       const body = await readJson(req);
@@ -535,7 +550,7 @@ export async function createAdmin(options = {}) {
       }
       authFingerprint = undefined;
       await authState();
-      const session = createSession();
+      const session = createSession(req);
       setSessionCookie(res, session.raw, session.maxAge);
       auditEvent('auth.setup', 'admin', true);
       sendJson(res, 200, { ok: true, configured: true, authenticated: true, csrfToken: session.csrf, expiresAt: session.expiresAt });
@@ -558,7 +573,7 @@ export async function createAdmin(options = {}) {
         throw httpError(401, '管理员密码错误');
       }
       loginSucceeded();
-      const session = createSession();
+      const session = createSession(req);
       setSessionCookie(res, session.raw, session.maxAge);
       auditEvent('auth.login', 'admin', true);
       sendJson(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf, expiresAt: session.expiresAt });
@@ -952,7 +967,7 @@ export async function createAdmin(options = {}) {
         // Refresh the auth fingerprint first; otherwise the new session would be
         // dropped by the rotation check on the next request.
         await authState();
-        const fresh = createSession();
+        const fresh = createSession(req);
         setSessionCookie(res, fresh.raw, fresh.maxAge);
         auditEvent('auth.password_change', 'admin', true);
         sendJson(res, 200, { ok: true, csrfToken: fresh.csrf, expiresAt: fresh.expiresAt });

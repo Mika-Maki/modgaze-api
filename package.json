@@ -17,6 +17,7 @@
     "service:restart": "node scripts/service.mjs restart",
     "service:status": "node scripts/service.mjs status",
     "virtual-keys": "node scripts/virtual-keys.mjs",
-    "admin:password": "node scripts/admin-password.mjs"
+    "admin:password": "node scripts/admin-password.mjs",
+    "tls:init": "node scripts/tls-init.mjs"
   }
 }
