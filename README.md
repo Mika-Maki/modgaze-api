@@ -1,21 +1,37 @@
 # Modgaze 本地后端与 WebUI 控制台
 
-零第三方依赖，Node.js 22+。默认路由监听 http://127.0.0.1:8787 ，管理台监听 http://127.0.0.1:8788 。路由按 API key 隔离模型和目标地址；客户端只需要改成本地 base URL，继续发送原来的 key、模型 ID 和原生请求，不需要、也不接受目标 baseURL 参数。
+零第三方依赖，Node.js 22+。默认路由监听 <http://127.0.0.1:8787>，管理台监听 <http://127.0.0.1:8788>。路由按 API key 隔离模型和目标地址；客户端只需要改成本地 base URL，继续发送原来的 key、模型 ID 和原生请求，不需要、也不接受目标 baseURL 参数。
 
 管理台提供完整的本地控制面：上游分组增删改、上游 Key 更新、协议路由、模型目录、虚拟 Key 生成/轮换/撤销、直通 Key、连通性测试、运行参数、配置备份恢复、导入导出、审计与实时流量。管理台本身需要管理员密码登录；密码使用 **scrypt + 随机盐** 做哈希后保存，不存储明文，可在服务器本地重置。
 
-## 启动与管理
+## Quickstart
 
-本目录已从 router-preparetion.md 导入私密 config/local.json；源文件与该配置均含真实 key，不要上传。导入不改动 DSH / AstrBot，不发起远端请求。
+要求 Node.js 22+，零第三方依赖，不需要 `npm install`。默认路由监听 `http://127.0.0.1:8787`，管理台监听 `http://127.0.0.1:8788`，默认都只绑定回环地址。
 
 ```bash
 cd /root/amerge
-npm run check
-npm test
-npm run service:start
-npm run service:status
+npm run import          # 首次生成最小 config/local.json，并一次性打印本地 key
+npm run check           # 校验配置
+npm run service:start   # 后台启动；前台调试用 npm start
 curl -fsS http://127.0.0.1:8787/healthz
 ```
+
+1. 打开管理台 <http://127.0.0.1:8788>，首次进入设置管理员密码（至少 10 位），之后每次用该密码登录。
+2. 在「上游分组」新建分组：填写上游 baseURL、上游 Key、协议和模型。已有 router-preparetion.md 时也可以一次性导入完整配置：`npm run import:preparation -- --source PATH`（不指定 `--source` 会在项目根目录、再上一级目录查找；默认拒绝覆盖，重建加 `--force`，写盘前自动备份到 run/backups）。
+3. 客户端 base_url 用 `http://127.0.0.1:8787/v1`（Anthropic SDK 用 `http://127.0.0.1:8787`），key 填第 2 步分组里的凭证；推荐在「本地密钥」生成虚拟 Key（`mr-...`，要求该分组已配置上游 Key）。
+
+验证模型发现（把 `<虚拟 Key>` 换成实际 key）：
+
+```bash
+curl -fsS http://127.0.0.1:8787/v1/models \
+  -H "Authorization: Bearer <虚拟 Key>"
+```
+
+`npm run import` 生成的是占位配置：单个分组指向不可达的 example.invalid，附带一次性打印的本地 key，只用于验证启动、鉴权和 /v1/models；换成真实上游前不会成功转发生成请求。config/local.json 内含真实 key，不要上传或提交。停止服务用 `npm run service:stop`，日志在 run/modgaze.log。需要后端 HTTPS（8786 / 8789）时见 [docs/https.md](docs/https.md)。
+
+## 启动与管理
+
+首次生成配置、启动与首次登录见上面的 Quickstart。日常操作：
 
 打开管理台：<http://127.0.0.1:8788>。第一次打开时会要求创建管理员密码（至少 10 位）；之后每次打开使用该密码登录。密码哈希保存在 `config/admin-auth.private.json`（0600），不会出现在日志、配置导出或 API 响应里。
 
@@ -38,9 +54,9 @@ npm run service:restart
 npm run service:stop
 ```
 
-前台运行使用 npm start；Linux 后台管理使用 service:*，日志 run/modgaze.log，PID 身份文件 run/service.json。管理台与路由在同一进程内启动；如需关闭管理台，可在启动时加 `--no-admin`。默认关闭访问日志；开启 accessLog 后只记随机 request_id、method、protocol、status、duration_ms，不记 key、正文、查询、模型或上游地址。后台进程独立于当前会话，但未安装开机自启服务。
+前台运行使用 npm start；Linux 后台管理使用 service:*，日志 run/modgaze.log，PID 身份文件 run/service.json。两者互斥：后台服务占用 8787/8788 时再跑 npm start 会以 `EADDRINUSE` 退出，先 npm run service:stop 再前台启动。管理台与路由在同一进程内启动；如需关闭管理台，可在启动时加 `--no-admin`。默认关闭访问日志；开启 accessLog 后只记随机 request_id、method、protocol、status、duration_ms，不记 key、正文、查询、模型或上游地址。后台进程独立于当前会话，但未安装开机自启服务。
 
-通过管理台保存配置会热重载路由（正在进行的请求不受影响）。手动改 `config/local.json` 后，可在管理台点「重载配置」或执行 `npm run service:restart`。监听地址/端口和管理台端口变更需要重启进程后生效。重复执行导入默认拒绝覆盖；确认需要重新从源生成时使用 `npm run import -- --force`，导入会替换手工配置，先自行备份或先点「立即备份」。
+通过管理台保存配置会热重载路由（正在进行的请求不受影响）。手动改 `config/local.json` 后，可在管理台点「重载配置」或执行 `npm run service:restart`。监听地址/端口和管理台端口变更需要重启进程后生效。npm run import 在配置已存在时不会覆盖；从源文档重建（npm run import:preparation）默认拒绝覆盖，确认后用 `npm run import:preparation -- --force`，会替换手工配置，先自行备份或先点「立即备份」。
 
 ## WebUI 管理台（8788）
 
@@ -69,7 +85,7 @@ npm run service:stop
 - 登录成功后使用 HttpOnly、SameSite=Strict 会话 Cookie；非 GET 管理请求必须带每个会话独立的 CSRF Token。
 - 12 小时绝对过期、2 小时空闲过期；管理员密码变更或本地重置会立即让旧会话失效；服务重启后需重新登录。
 - 连续登录失败会触发递进限流；Host 和 Origin 都会校验，防止 DNS rebinding 与跨站请求。
-- 管理台只监听 127.0.0.1；如需远程访问，请自行使用 SSH 隧道或可信反向代理，不要把 8788 直接暴露到公网。
+- 管理台只监听 `127.0.0.1`；如需远程访问，请自行使用 SSH 隧道或可信反向代理，不要把 8788 直接暴露到公网。
 
 ## API
 
@@ -92,7 +108,7 @@ npm run service:stop
 
 ## 客户端连接
 
-OpenAI 客户端 base_url = http://127.0.0.1:8787/v1；Anthropic 客户端 base_url = http://127.0.0.1:8787（SDK 自行追加 /v1/messages）。**推荐 key 填管理台生成的虚拟 Key（mr-...）**，客户端不需要知道真实上游 key；直通 Key 只用于兼容旧客户端。相同模型名可因 key 不同而自动到不同服务，无需添加 provider 前缀。没有默认超级 key，也不允许未知 key 兜底。
+OpenAI 客户端 base_url = <http://127.0.0.1:8787/v1>；Anthropic 客户端 base_url = <http://127.0.0.1:8787>（SDK 自行追加 /v1/messages）。**推荐 key 填管理台生成的虚拟 Key（mr-...）**，客户端不需要知道真实上游 key；直通 Key 只用于兼容旧客户端。相同模型名可因 key 不同而自动到不同服务，无需添加 provider 前缀。没有默认超级 key，也不允许未知 key 兜底。
 
 以下 API_KEY 使用 shell 环境变量，不能用一个供应商的 key 调另一个分组：
 
@@ -220,12 +236,14 @@ baseURL 使用 API 前缀而不是完整端点：/v1 不再重复追加；根域
 - src/metrics.mjs：进程内实时请求指标。
 - src/secrets.mjs：流式敏感值脱敏。
 - scripts/admin-password.mjs：本地管理员密码设置/重置/状态。
-- scripts/import-preparation.mjs：从现有准备材料生成本地配置。
+- scripts/init-config.mjs：生成最小 config/local.json（npm run import），不需要准备文档。
+- scripts/import-preparation.mjs：从 router-preparetion.md 生成完整本地配置（npm run import:preparation）。
 - scripts/service.mjs：Linux 后台服务启停，不依赖 systemd。
 - scripts/virtual-keys.mjs：为现有配置批量生成虚拟 Key。
 - public/index.html、public/styles.css、public/assets/app.js、public/assets/js/*：无外部依赖的 WebUI。
 - test/router.test.mjs、test/virtual-keys.test.mjs、test/regressions.test.mjs：路由与脱敏回归。
 - test/admin-auth.test.mjs、test/admin.test.mjs：密码哈希、登录/CSRF、管理 CRUD、备份、上游测试回归。
+- docs/https.md：HTTPS/TLS 配置教程（证书生成、监听配置、客户端信任、管理台 TLS）。
 - config/example.json：无真实密钥的独立配置示例。
 
 验证使用 npm test；它不验证真实供应商当前可用性、实际上下文窗口或账单。远端鉴权、余额、模型权限仍由对应供应商判断。

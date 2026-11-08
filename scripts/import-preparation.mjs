@@ -2,6 +2,7 @@
 /**
  * Offline importer for router-preparetion.md, Node ESM, no dependencies.
  * Run: node scripts/import-preparation.mjs [--source PATH] [--output PATH] [--force]
+ * Without --source, it reads ./router-preparetion.md, then ../router-preparetion.md.
  * Only the output file and its private parent directory are written.
  *
  * Import limitations:
@@ -29,6 +30,8 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SOURCE_FILE = 'router-preparetion.md';
+const SOURCE_CANDIDATES = [resolve(ROOT, SOURCE_FILE), resolve(ROOT, '..', SOURCE_FILE)];
 const PROTOCOLS = new Map([
   ['openai-completions', 'chat'], ['openai_chat_completion', 'chat'],
   ['responses', 'responses'], ['openai-responses', 'responses'],
@@ -250,8 +253,29 @@ export async function writePrivate(output, content, force = false) {
     throw error;
   }
 }
+async function readSource(path) {
+  try { return await readFile(path, 'utf8'); }
+  catch (error) {
+    if (error.code === 'ENOENT') fail('source-not-found');
+    if (error.code === 'EACCES' || error.code === 'EPERM') fail('source-unreadable');
+    fail('source-io-failed');
+  }
+}
+
+async function readDefaultSource() {
+  for (const candidate of SOURCE_CANDIDATES) {
+    try { return await readFile(candidate, 'utf8'); }
+    catch (error) {
+      if (error.code === 'ENOENT') continue;
+      if (error.code === 'EACCES' || error.code === 'EPERM') fail('source-unreadable');
+      fail('source-io-failed');
+    }
+  }
+  fail('source-not-found');
+}
+
 export async function main(argv = process.argv.slice(2)) {
-  let source = resolve(ROOT, 'router-preparetion.md');
+  let source = null;
   let output = resolve(ROOT, 'config/local.json');
   let force = false;
   const seen = new Set();
@@ -267,15 +291,25 @@ export async function main(argv = process.argv.slice(2)) {
     } else fail('unknown-option');
   }
   if (source === output) fail('source-output-must-differ');
-  const { config, ambiguities } = buildConfig(await readFile(source, 'utf8'));
+  const { config, ambiguities } = buildConfig(source === null ? await readDefaultSource() : await readSource(source));
   await writePrivate(output, JSON.stringify(config, null, 2) + '\n', force);
   console.log(JSON.stringify({ groups: config.groups.length, models: config.groups.reduce((sum, g) => sum + g.models.length, 0), ambiguities }));
 }
+const HINTS = new Map([
+  ['source-not-found', 'place ' + SOURCE_FILE + ' in the project root or its parent, or pass --source PATH'],
+  ['source-unreadable', 'the source document is not readable; check its owner and mode (0600 expected)'],
+  ['output-exists-use-force', 'the output already exists; back it up and rerun with: npm run import:preparation -- --force'],
+  ['output-permission-denied', 'the output path is not writable; check the parent directory mode'],
+]);
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(error => {
     // Never print native errors: their messages may include source text or paths.
-    const code = error instanceof ImportError ? error.code : 'import-io-failed';
-    console.error(JSON.stringify({ groups: 0, models: 0, ambiguities: [{ code }, ...(error instanceof ImportError ? error.report : [])] }));
+    const code = error instanceof ImportError ? error.code
+      : error?.code === 'EACCES' || error?.code === 'EPERM' ? 'output-permission-denied'
+        : error?.code === 'ENOSPC' ? 'output-no-space'
+          : 'import-io-failed';
+    const hint = HINTS.get(code);
+    console.error(JSON.stringify({ groups: 0, models: 0, ambiguities: [{ code }, ...(error instanceof ImportError ? error.report : [])], ...(hint ? { hint } : {}) }));
     process.exitCode = 1;
   });
 }

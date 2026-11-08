@@ -8,7 +8,7 @@ const configPath = resolve(root, 'config/local.json');
 const directory = resolve(root, 'config/tls');
 try {
   const config = await readRawConfig(configPath);
-  if (config.https) throw new Error('HTTPS is already configured; existing certificates were not changed');
+  if (config.https || config.adminHttps) throw new Error('HTTPS is already configured; existing certificates were not changed');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   for (const name of ['ca.key', 'ca.crt', 'server.key', 'server.crt', 'server.csr', 'extensions.cnf']) {
@@ -23,7 +23,8 @@ try {
     await writeFile(join(directory,'extensions.cnf'), 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1\n', { mode: 0o600, flag: 'wx' });
     openssl(['x509','-req','-in','server.csr','-CA','ca.crt','-CAkey','ca.key','-set_serial','0x'+(await import('node:crypto')).randomBytes(16).toString('hex'),'-out','server.crt','-days','365','-sha256','-extfile','extensions.cnf']);
   } finally { process.umask(previous); }
-  config.https = { host: '127.0.0.1', port: 8443, keyFile: 'tls/server.key', certFile: 'tls/server.crt' };
+  config.https = { host: '127.0.0.1', port: 8786, keyFile: 'tls/server.key', certFile: 'tls/server.crt' };
+  config.adminHttps = { host: '127.0.0.1', port: 8789, keyFile: 'tls/server.key', certFile: 'tls/server.crt', allowedHosts: [] };
   await atomicWriteConfig(configPath, config);
-  console.log(JSON.stringify({ https: 'https://127.0.0.1:8443', caFile: 'config/tls/ca.crt', restartRequired: true, trustedAutomatically: false }));
+  console.log(JSON.stringify({ https: 'https://127.0.0.1:8786', adminHttps: 'https://127.0.0.1:8789', caFile: 'config/tls/ca.crt', restartRequired: true, trustedAutomatically: false }));
 } catch { console.error('TLS setup failed. Check config, openssl, and existing TLS files. No secrets printed.'); process.exitCode = 1; }
