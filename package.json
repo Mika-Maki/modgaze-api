@@ -1,0 +1,22 @@
+{
+  "name": "modgaze",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Modgaze — key-scoped local OpenAI/Anthropic router with an abyssal control-plane WebUI",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test",
+    "check": "node src/server.mjs --check",
+    "import": "node scripts/import-preparation.mjs",
+    "service:start": "node scripts/service.mjs start",
+    "service:stop": "node scripts/service.mjs stop",
+    "service:restart": "node scripts/service.mjs restart",
+    "service:status": "node scripts/service.mjs status",
+    "virtual-keys": "node scripts/virtual-keys.mjs",
+    "admin:password": "node scripts/admin-password.mjs"
+  }
+}

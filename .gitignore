@@ -1,0 +1,15 @@
+# Local runtime and credentials
+config/*.json
+!config/example.json
+*.private.json
+.env
+.env.*
+*.pem
+*.key
+*.log
+run/
+
+# Tooling / OS
+node_modules/
+coverage/
+.DS_Store

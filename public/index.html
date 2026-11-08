@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Modgaze · 控制中枢</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%23e0a267'/%3E%3Cstop offset='1' stop-color='%236b1b1c'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='%230a0305'/%3E%3Cpath d='M4 16c3.6-5.5 7.7-8 12-8s8.4 2.5 12 8c-3.6 5.5-7.7 8-12 8S7.6 21.5 4 16Z' fill='none' stroke='url(%23g)' stroke-width='1.8'/%3E%3Ccircle cx='16' cy='16' r='3.6' fill='%23e7b174'/%3E%3Ccircle cx='16' cy='16' r='1.7' fill='%230a0305'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/abyss.css">
+</head>
+<body>
+  <svg class="svg-defs" aria-hidden="true">
+    <symbol id="i-logo" viewBox="0 0 24 24"><path d="M2.2 12C4.9 7.6 8.3 5.4 12 5.4s7.1 2.2 9.8 6.6c-2.7 4.4-6.1 6.6-9.8 6.6S4.9 16.4 2.2 12Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 2v2M12 20v2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" opacity=".55"/></symbol>
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+    <symbol id="i-groups" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8m-2 2 2 2m-5 1 2 2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10m4 0h2M4 17h3m4 0h9"/><circle cx="16" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.4 2.9 8.4 7 10 4.1-1.6 7-5.6 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="2"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4 10-10"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+    <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h11"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.1M20 4v6h-6"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 6.2A10 10 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-2.2 3M6.3 6.4C3.7 8.1 2 12 2 12s3.5 7 10 7c2 0 3.7-.7 5.1-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 20h16"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 17V5m0 0 5 5m-5-5L7 10M4 20h16"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m5 0h5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 9v4m0 3v.5"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 2.2 6.4L21 10l-6.8 1.6L12 18l-2.2-6.4L3 10l6.8-1.6L12 2Z"/><path d="m19 16 .8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16Z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14 2.5-7h4"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3M10 10h4v4h-4z"/></symbol>
+  </svg>
+
+  <div id="boot-screen" class="boot-screen">
+    <div class="boot-halo" aria-hidden="true"></div>
+    <div class="boot-logo"><svg class="icon"><use href="#i-logo"/></svg></div>
+    <div class="boot-title">MODGAZE</div>
+    <div class="boot-eyebrow">ABYSSAL CONTROL PLANE</div>
+    <div class="boot-bar"><span></span></div>
+    <div class="boot-hint">正在连接本地管理台…</div>
+  </div>
+
+  <section id="auth-screen" class="auth-screen hidden">
+    <div class="auth-atmosphere" aria-hidden="true">
+      <div class="auth-glow"></div>
+      <div class="auth-ocular"></div>
+      <div class="auth-grain"></div>
+    </div>
+    <div class="auth-layout">
+      <div class="auth-brand">
+        <div class="brand-lockup"><span class="brand-orb"><svg class="icon"><use href="#i-logo"/></svg></span><span>MODGAZE</span></div>
+        <div class="auth-overline">ABYSSAL CONTROL PLANE · 01</div>
+        <h1>本地模型路由，<br><span class="gradient-text">只凝视一个入口。</span></h1>
+        <p class="auth-lead">分组、上游密钥、虚拟 Key、路由与模型，全部沉在同一个本地控制台里。客户端只拿到入口，真实凭证留在暗面。</p>
+        <ul class="auth-points">
+          <li><span class="point-icon"><svg class="icon"><use href="#i-shield"/></svg></span><div><b>加盐哈希存储</b><span>管理员密码使用 scrypt + 随机盐保存，从不落明文。</span></div></li>
+          <li><span class="point-icon"><svg class="icon"><use href="#i-activity"/></svg></span><div><b>热更新，不断流</b><span>保存配置后路由即时热重载，正在进行的请求不受影响。</span></div></li>
+          <li><span class="point-icon"><svg class="icon"><use href="#i-key"/></svg></span><div><b>虚拟 Key 隔离</b><span>客户端只拿本地 Key，真实上游密钥留在服务端。</span></div></li>
+        </ul>
+        <div class="auth-footnote">MODGAZE · LOCAL ONLY · NO TELEMETRY</div>
+      </div>
+      <div class="auth-card-wrap">
+        <div class="auth-card-frame" aria-hidden="true"></div>
+        <div id="auth-card" class="auth-card">
+          <div class="auth-skeleton"><span></span><span></span><span></span></div>
+        </div>
+        <div id="auth-reset-hint" class="auth-reset-hint hidden">
+          忘记密码？在服务器终端运行 <code>npm run admin:password</code> 本地重置。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="app" class="app hidden">
+    <div class="app-atmosphere" aria-hidden="true">
+      <div class="atmosphere-glow"></div>
+      <div class="atmosphere-rings"></div>
+      <div class="atmosphere-grain"></div>
+      <div class="atmosphere-vignette"></div>
+    </div>
+
+    <header class="void-header">
+      <a class="brand void-brand" href="#/overview" data-nav="overview" aria-label="Modgaze 控制中枢">
+        <span class="brand-orb small"><svg class="icon"><use href="#i-logo"/></svg></span>
+        <span class="brand-text">MODGAZE<small>ABYSSAL CONTROL PLANE</small></span>
+      </a>
+      <div id="crumbs" class="crumbs void-crumbs"><span class="current">控制中枢</span></div>
+      <div class="void-actions">
+        <span id="live-pill" class="live-pill"><i></i><span>在线</span></span>
+        <span class="token-pill" title="本控制台不限制 Token 使用；模型上下文上限由各分组配置决定">TOKEN <b>∞</b></span>
+        <button class="icon-btn command-trigger" data-action="command" title="命令面板 (Ctrl/⌘ K)" aria-label="打开命令面板"><svg class="icon"><use href="#i-search"/></svg><kbd>⌘K</kbd></button>
+        <button class="icon-btn" data-action="refresh" title="刷新数据" aria-label="刷新"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        <span class="void-version" data-app-version>v%APP_VERSION%</span>
+        <button class="icon-btn void-logout" data-action="logout" title="退出登录" aria-label="退出登录"><svg class="icon"><use href="#i-logout"/></svg></button>
+      </div>
+    </header>
+
+    <main id="view" class="view view--hub" aria-live="polite"></main>
+  </div>
+
+  <div id="offline-banner" class="offline-banner hidden">
+    <svg class="icon"><use href="#i-alert"/></svg>
+    <span id="offline-text">连接已断开，正在重试…</span>
+    <button class="btn btn-sm btn-ghost" data-action="refresh">立即重试</button>
+  </div>
+
+  <div id="modal-root" class="modal-root"></div>
+  <div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>

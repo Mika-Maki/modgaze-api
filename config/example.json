@@ -1,0 +1,77 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "adminPort": 8788,
+  "maxBodyBytes": 67108864,
+  "upstreamTimeoutMs": 120000,
+  "requestTimeoutMs": 600000,
+  "accessLog": false,
+  "groups": [
+    {
+      "id": "example",
+      "apiKeys": [
+        {
+          "env": "MODGAZE_API_KEY"
+        }
+      ],
+      "routes": {
+        "chat": {
+          "baseURL": "https://api.openai.com/v1",
+          "auth": "bearer"
+        },
+        "responses": {
+          "baseURL": "https://api.openai.com/v1",
+          "auth": "bearer"
+        }
+      },
+      "models": [
+        {
+          "id": "your-model-id",
+          "contextWindow": 128000,
+          "maxOutputTokens": 16384,
+          "input": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": {
+            "low": "low",
+            "medium": "medium",
+            "high": "high"
+          },
+          "metadataSource": "example only; replace with provider capabilities",
+          "defaults": {
+            "responses": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "anthropic-example",
+      "apiKeys": [
+        {
+          "env": "MODGAZE_ANTHROPIC_KEY"
+        }
+      ],
+      "routes": {
+        "messages": {
+          "baseURL": "https://api.anthropic.com",
+          "auth": "x-api-key"
+        }
+      },
+      "models": [
+        {
+          "id": "your-anthropic-model-id",
+          "input": [
+            "text",
+            "image"
+          ],
+          "metadataSource": "example only; replace with provider capabilities"
+        }
+      ]
+    }
+  ]
+}
