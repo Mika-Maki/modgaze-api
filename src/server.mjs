@@ -70,7 +70,7 @@ try {
       setTimeout(() => { for (const listener of listeners) listener.closeAllConnections(); process.exit(0); }, 10000).unref();
     };
 
-    server.on('error', error => { console.error(JSON.stringify({ event: 'listen_error', code: error.code ?? 'UNKNOWN' })); process.exitCode = 1; });
+    server.on('error', error => { console.error(JSON.stringify({ event: 'listen_error', code: error.code ?? 'UNKNOWN', host: compiled.host, port: compiled.port })); process.exitCode = 1; });
     await new Promise((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(compiled.port, compiled.host, () => {
@@ -147,6 +147,17 @@ try {
   }
 } catch (error) {
   // JSON parser messages can include secret source snippets; never print them.
-  console.error(JSON.stringify({ event: 'startup_error', message: error instanceof SyntaxError ? 'Invalid configuration JSON' : error.code === 'ENOENT' ? 'Config missing; run npm run import first' : 'Invalid or unreadable configuration; check schema and secret references' }));
+  const code = typeof error?.code === 'string' ? error.code : null;
+  const port = Number.isSafeInteger(error?.port) ? error.port : null;
+  const message = error instanceof SyntaxError ? 'Invalid configuration JSON'
+    : code === 'ENOENT' ? 'Config missing; run npm run import first'
+      : code === 'EADDRINUSE' ? 'Port already in use; another instance may be running (npm run service:status, stop it with npm run service:stop)'
+        : code === 'EACCES' ? 'Permission denied listening on the configured port'
+          : code === 'EADDRNOTAVAIL' ? 'Configured host is not available on this machine'
+            : 'Invalid or unreadable configuration; check schema and secret references';
+  const record = { event: 'startup_error', message };
+  if (code) record.code = code;
+  if (port !== null) record.port = port;
+  console.error(JSON.stringify(record));
   process.exitCode = 1;
 }
