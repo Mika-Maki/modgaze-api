@@ -1,5 +1,7 @@
 # Modgaze 本地后端与 WebUI 控制台
 
+[![CI](https://github.com/Mika-Maki/modgaze-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Mika-Maki/modgaze-api/actions/workflows/ci.yml)
+
 零第三方依赖，Node.js 22+。默认路由监听 <http://127.0.0.1:8787>，管理台监听 <http://127.0.0.1:8788>。路由按 API key 隔离模型和目标地址；客户端只需要改成本地 base URL，继续发送原来的 key、模型 ID 和原生请求，不需要、也不接受目标 baseURL 参数。
 
 管理台提供完整的本地控制面：上游分组增删改、上游 Key 更新、协议路由、模型目录、虚拟 Key 生成/轮换/撤销、直通 Key、连通性测试、运行参数、配置备份恢复、导入导出、审计与实时流量。管理台本身需要管理员密码登录；密码使用 **scrypt + 随机盐** 做哈希后保存，不存储明文，可在服务器本地重置。
@@ -247,9 +249,16 @@ baseURL 使用 API 前缀而不是完整端点：/v1 不再重复追加；根域
 - public/index.html、public/styles.css、public/assets/app.js、public/assets/js/*：无外部依赖的 WebUI。
 - test/router.test.mjs、test/virtual-keys.test.mjs、test/regressions.test.mjs：路由与脱敏回归。
 - test/admin-auth.test.mjs、test/admin.test.mjs：密码哈希、登录/CSRF、管理 CRUD、备份、上游测试回归。
+- .github/workflows/ci.yml：GitHub Actions 流水线，在 Node 22/24/26 上执行 npm test。
 - docs/https.md：HTTPS/TLS 配置教程（证书生成、监听配置、客户端信任、管理台 TLS）。
 - docs/tunnel.md：Cloudflare Tunnel 只暴露 API 8787 的配置、常驻脚本与 fake-ip 处理。
 - tunnelup.sh：一键启动 Modgaze + Cloudflare named tunnel（token 模式），支持 start/stop/status/url。
 - config/example.json：无真实密钥的独立配置示例。
 
 验证使用 npm test；它不验证真实供应商当前可用性、实际上下文窗口或账单。远端鉴权、余额、模型权限仍由对应供应商判断。
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。
+
+Copyright (c) 2026 Mika-Maki

@@ -2,6 +2,7 @@
   "name": "modgaze",
   "version": "1.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Modgaze — key-scoped local OpenAI/Anthropic router with an abyssal control-plane WebUI",
   "engines": {
