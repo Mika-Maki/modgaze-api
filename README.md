@@ -236,7 +236,14 @@ baseURL 使用 API 前缀而不是完整端点：/v1 不再重复追加；根域
 - src/router.mjs：配置校验、key 分组、模型发现、原生协议代理、热重载与指标回调。
 - src/server.mjs：私密配置加载、环境 key 引用、路由 + 管理台启动/退出。
 - src/config.mjs：配置读取、原子写入、备份、权限与秘密引用校验。
-- src/admin.mjs：8788 管理台 HTTP 服务、会话、CSRF、管理 API、静态资源。
+- src/admin.mjs：管理台装配层：选项、运行时状态、会话/鉴权、请求校验与分发。
+- src/admin-http.mjs：Cookie、JSON/文本响应与受限 JSON 请求体读取。
+- src/admin-sessions.mjs：内存会话、CSRF、绝对/空闲过期与清理。
+- src/admin-static.mjs：管理台静态资源、CSP 与符号链接校验。
+- src/admin-keys.mjs：密钥生成、访问 Key 辅助、协议与模型入参归一。
+- src/admin-probe.mjs：分组上游测试与本地路由连通性测试。
+- src/admin-routes-groups.mjs：分组、模型、协议路由与访问密钥管理接口。
+- src/admin-routes-system.mjs：运行参数、配置导入导出、备份与服务控制。
 - src/admin-auth.mjs：scrypt 加盐密码哈希、密码文件读写。
 - src/admin-store.mjs：配置变更事务、分组/密钥/模型/路由校验与展示脱敏。
 - src/metrics.mjs：进程内实时请求指标。

@@ -339,6 +339,13 @@ export function resolvedGroupById(resolved, id) {
   return (resolved.groups ?? []).find(item => item.id === id) ?? null;
 }
 
+export function groupPayload(result, id) {
+  const rawGroup = result.raw.groups.find(item => item.id === id);
+  if (!rawGroup) return null;
+  const resolvedGroup = resolvedGroupById(result.resolved, id) ?? rawGroup;
+  return sanitizeGroup(rawGroup, resolvedGroup);
+}
+
 export function findKeyEntry(rawGroup, resolvedGroup, field, keyId) {
   const rawList = Array.isArray(rawGroup[field]) ? rawGroup[field] : [];
   const resolvedList = Array.isArray(resolvedGroup[field]) ? resolvedGroup[field] : [];
