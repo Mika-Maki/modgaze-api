@@ -172,6 +172,30 @@ export async function createAdmin(options = {}) {
     return new Set(['127.0.0.1:' + port, 'localhost:' + port, '[::1]:' + port]);
   }
 
+  // Local tunnels and reverse proxies connect from loopback, so the TCP peer
+  // alone cannot prove that first-time setup is happening at the server console.
+  function isLoopbackHost(value) {
+    try {
+      const hostname = new URL('http://' + value).hostname.toLowerCase();
+      return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '[::1]';
+    } catch { return false; }
+  }
+
+  // Same-host tunnels connect from loopback and may rewrite Host. Any forwarded
+  // identity header therefore disqualifies the request from "local console".
+  const PROXY_IDENTITY_HEADERS = ['cf-connecting-ip', 'cf-ray', 'x-forwarded-for', 'forwarded', 'x-real-ip'];
+
+  function isLocalRequest(req) {
+    if (PROXY_IDENTITY_HEADERS.some(name => req.headers[name] !== undefined)) return false;
+    const peer = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/i, '');
+    if (peer !== '127.0.0.1' && peer !== '::1') return false;
+    return isLoopbackHost(req.headers.host);
+  }
+
+  function requireLocal(req) {
+    if (!isLocalRequest(req)) throw httpError(403, '此操作仅允许在服务器本机执行');
+  }
+
   function assertTrustedRequest(req) {
     const encrypted = Boolean(req.socket.encrypted);
     const port = encrypted ? req.socket.localPort : currentAdminPort();
@@ -293,8 +317,9 @@ export async function createAdmin(options = {}) {
       return true;
     }
     if (path === '/api/auth/setup' && method === 'POST') {
-      const peer = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
-      if (req[PUBLIC_ORIGIN_REQUEST] || (peer !== '127.0.0.1' && peer !== '::1')) throw httpError(403, '请先在服务器本机设置管理员密码');
+      // A tunnel or local proxy makes the TCP peer look like loopback. Host and
+      // forwarded-identity headers must also look like a real console request.
+      if (req[PUBLIC_ORIGIN_REQUEST] || !isLocalRequest(req)) throw httpError(403, '请先在服务器本机设置管理员密码');
       const current = await authState();
       if (current.configured) throw httpError(409, current.error ? '管理员密码文件无效，请本地重置后再试' : '管理员密码已经设置，请登录');
       const body = await readJson(req);
@@ -343,7 +368,7 @@ export async function createAdmin(options = {}) {
   const system = createSystemRoutes({
     store, metrics, requestAudit, auditEvent, statePayload, runtimeInfo,
     currentAdminPort, routerPort, configWarnings, incomingConfig,
-    redactedConfig, restartRequired, projectRoot,
+    redactedConfig, restartRequired, projectRoot, backupDir, auth, acquireLogin,
   });
 
   async function handleApi(req, res, url, parts) {
@@ -365,6 +390,7 @@ export async function createAdmin(options = {}) {
         return;
       }
       if (parts[2] === 'password' && method === 'POST' && parts.length === 3) {
+        requireLocal(req);
         const body = await readJson(req);
         const releaseLogin = acquireLogin(req);
         try {
@@ -387,6 +413,10 @@ export async function createAdmin(options = {}) {
       }
       throw httpError(404, '未知认证接口');
     }
+
+    // Backup downloads can reconstruct the raw config from disk, so they stay
+    // console-only even for an authenticated tunnel session.
+    if (parts[1] === 'backups' && parts.length === 4 && parts[3] === 'download') requireLocal(req);
 
     if (parts[1] === 'groups') {
       if (parts.length === 2) return await groups.handleGroupCollection(req, res);

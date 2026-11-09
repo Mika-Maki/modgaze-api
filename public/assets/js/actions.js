@@ -8,7 +8,7 @@ import { navigate, navigateFromHub, render, showOffline } from './router.js';
 import { filterGroups } from './views/groups.js';
 import {
   openCommandPalette, openCreateGroupModal, openEditGroupModal, openRouteModal, openModelModal,
-  openBulkModelsModal, openVirtualKeyModal, openApiKeyModal, openKeyLabelModal, openCloneModal, openBackupModal, openSecretModal,
+  openBulkModelsModal, openVirtualKeyModal, openApiKeyModal, openKeyLabelModal, openCloneModal, openBackupModal, openSecretModal, passwordPrompt,
 } from './dialogs.js';
 
 function closeSidebar() {
@@ -302,13 +302,17 @@ async function deleteBackup(name) {
   toast('备份已删除');
 }
 async function exportConfigRaw() {
-  const ok = await confirmModal({
-    title: '下载完整配置', danger: true,
-    message: '完整配置包含所有上游 API Key 与虚拟 Key 明文。下载后请存放在加密磁盘，不要提交到 Git 或发送到聊天工具。',
-    confirmLabel: '继续下载',
+  const password = await passwordPrompt({
+    title: '导出完整配置',
+    subtitle: '完整导出需要重新验证管理员密码',
+    message: '完整配置包含所有上游 API Key 与虚拟 Key 明文。验证通过后浏览器会下载 JSON 文件，请存放在加密磁盘，不要提交到 Git 或发送到聊天工具。',
+    confirmLabel: '验证并下载',
+    danger: true,
   });
-  if (!ok) return;
-  window.location.href = '/api/config/export?mode=raw&download=1';
+  if (!password) return;
+  const result = await api('/api/config/export', { method: 'POST', body: { mode: 'raw', password } });
+  downloadText('modgaze-config-private.json', JSON.stringify(result.config, null, 2) + '\n');
+  toast('完整配置已下载');
 }
 async function logout() {
   try { await api('/api/auth/logout', { method: 'POST', body: {} }); } catch {}

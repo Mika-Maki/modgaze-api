@@ -14,7 +14,7 @@ export function createSystemRoutes(context) {
   const {
     store, metrics, requestAudit, auditEvent, statePayload, runtimeInfo,
     currentAdminPort, routerPort, configWarnings, incomingConfig,
-    redactedConfig, restartRequired, projectRoot,
+    redactedConfig, restartRequired, projectRoot, backupDir, auth, acquireLogin,
   } = context;
 
   async function handle(req, res, url, parts) {
@@ -141,18 +141,45 @@ export function createSystemRoutes(context) {
         sendJson(res, 200, { ok: true, summary: snapshot.summary, warnings: configWarnings(snapshot.raw, snapshot.compiled) });
         return true;
       }
-      if (parts[2] === 'export' && method === 'GET' && parts.length === 3) {
-        const redact = url.searchParams.get('redacted') === '1' || url.searchParams.get('mode') === 'redacted';
-        const snapshot = await store.read();
-        const config = redact ? redactedConfig(snapshot.raw) : structuredClone(snapshot.raw);
-        if (url.searchParams.get('download') === '1') {
-          sendText(res, 200, JSON.stringify(config, null, 2) + '\n', 'application/json; charset=utf-8', {
-            'content-disposition': 'attachment; filename="modgaze-config-' + (redact ? 'redacted' : 'private') + '.json"',
-          });
-        } else {
-          sendJson(res, 200, { ok: true, redacted: redact, config });
+      if (parts[2] === 'export' && parts.length === 3) {
+        if (method === 'GET') {
+          const mode = url.searchParams.get('mode') === 'raw' || url.searchParams.get('redacted') === '0' ? 'raw' : 'redacted';
+          if (mode === 'raw') {
+            const error = httpError(403, '下载完整配置需要重新验证管理员密码');
+            error.code = 'step_up_required';
+            throw error;
+          }
+          const snapshot = await store.read();
+          const config = redactedConfig(snapshot.raw);
+          if (url.searchParams.get('download') === '1') {
+            sendText(res, 200, JSON.stringify(config, null, 2) + '\n', 'application/json; charset=utf-8', {
+              'content-disposition': 'attachment; filename="modgaze-config-redacted.json"',
+            });
+          } else {
+            sendJson(res, 200, { ok: true, redacted: true, config });
+          }
+          return true;
         }
-        return true;
+        if (method === 'POST') {
+          const body = await readJson(req);
+          if (body.mode !== 'raw' && body.mode !== 'redacted') throw httpError(400, '导出模式无效');
+          if (typeof body.password !== 'string' || !body.password) throw httpError(400, '请输入管理员密码');
+          // Raw exports are step-up protected and share the login brute-force budget.
+          const release = acquireLogin(req);
+          let valid;
+          try { valid = await auth.verify(body.password); }
+          finally { release(); }
+          if (!valid) {
+            auditEvent('config.export_denied', body.mode, false);
+            throw httpError(401, '管理员密码错误');
+          }
+          const snapshot = await store.read();
+          const config = body.mode === 'raw' ? structuredClone(snapshot.raw) : redactedConfig(snapshot.raw);
+          auditEvent('config.export', body.mode, true);
+          sendJson(res, 200, { ok: true, redacted: body.mode === 'redacted', config });
+          return true;
+        }
+        throw httpError(405, '不支持的方法');
       }
     }
 
@@ -169,8 +196,13 @@ export function createSystemRoutes(context) {
         let raw;
         try { raw = await readBackupFile(backupDir, name); }
         catch { throw httpError(400, '备份不存在或不可读'); }
-        sendText(res, 200, JSON.stringify(raw, null, 2) + '\n', 'application/json; charset=utf-8', {
-          'content-disposition': 'attachment; filename="' + name.replace(/[^A-Za-z0-9._-]/g, '_') + '"',
+        // Downloads are for inspection and sharing; credentials never leave the
+        // server through this route. Restore still reads the raw file locally.
+        const config = redactedConfig(raw);
+        const filename = name.replace(/\.json$/i, '') + '.redacted.json';
+        auditEvent('backup.download', name, true);
+        sendText(res, 200, JSON.stringify(config, null, 2) + '\n', 'application/json; charset=utf-8', {
+          'content-disposition': 'attachment; filename="' + filename.replace(/[^A-Za-z0-9._-]/g, '_') + '"',
         });
         return true;
       }

@@ -15,7 +15,8 @@ const AUDIT_LABELS = {
   'model.route.update': '更新模型路由', 'model.route.delete': '删除模型路由',
   'key.create': '创建密钥', 'key.update': '更新密钥', 'key.delete': '删除密钥', 'key.rotate': '轮换密钥',
   'settings.update': '更新设置', 'config.import': '导入配置', 'config.reload': '重载配置',
-  'backup.create': '创建备份', 'backup.restore': '恢复备份', 'backup.delete': '删除备份',
+  'config.export': '导出配置', 'config.export_denied': '导出失败',
+  'backup.create': '创建备份', 'backup.restore': '恢复备份', 'backup.delete': '删除备份', 'backup.download': '下载脱敏备份',
   'service.restart': '重启服务', 'stats.reset': '重置统计',
 };
 const app = {

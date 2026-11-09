@@ -209,6 +209,42 @@ function openBackupModal() {
   });
 }
 
+function passwordPrompt(options) {
+  return new Promise(function (resolve) {
+    let settled = false;
+    const finish = function (value) {
+      if (settled) return;
+      settled = true;
+      closeModal();
+      resolve(value);
+    };
+    openModal({
+      title: options.title || '验证管理员密码',
+      subtitle: options.subtitle || '',
+      icon: 'shield',
+      size: 'narrow',
+      danger: Boolean(options.danger),
+      body: '<form id="password-prompt-form"><div class="danger-copy" style="font-size:13px;line-height:1.7">' + (options.message || '') + '</div>' +
+        '<div class="field mt-3"><label for="prompt-password">管理员密码</label><input class="input" id="prompt-password" name="password" type="password" autocomplete="current-password" required></div>' +
+        '<div class="form-error mt-3" role="alert"></div></form>',
+      footer: '<button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn ' + (options.danger ? 'btn-danger' : 'btn-primary') + '" type="submit" form="password-prompt-form">' + esc(options.confirmLabel || '验证') + '</button>',
+      onClose: function () { if (!settled) { settled = true; resolve(null); } },
+    });
+    const form = $('#password-prompt-form');
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      const password = $('#prompt-password').value;
+      if (!password) {
+        const error = form.querySelector('.form-error');
+        error.textContent = '请输入管理员密码';
+        error.classList.add('show');
+        return;
+      }
+      finish(password);
+    });
+  });
+}
+
 function openSecretModal(key, options) {
   app.modalSecret = key;
   const opts = options || {};
@@ -222,4 +258,4 @@ function openSecretModal(key, options) {
   });
 }
 
-export { openCommandPalette, renderCommandList, focusCommand, nextGroupId, openCreateGroupModal, openEditGroupModal, openRouteModal, openModelModal, openBulkModelsModal, groupSelectOptions, openVirtualKeyModal, openApiKeyModal, openKeyLabelModal, openCloneModal, openBackupModal, openSecretModal };
+export { openCommandPalette, renderCommandList, focusCommand, nextGroupId, openCreateGroupModal, openEditGroupModal, openRouteModal, openModelModal, openBulkModelsModal, groupSelectOptions, openVirtualKeyModal, openApiKeyModal, openKeyLabelModal, openCloneModal, openBackupModal, openSecretModal, passwordPrompt };

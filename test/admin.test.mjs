@@ -285,3 +285,87 @@ test('upstream connectivity uses resolved credentials and never returns them', a
   const state = await f.request('/api/state');
   assert.equal(state.text.includes('sk-env-resolved-secret-123'), false);
 });
+
+test('raw config export requires password step-up and backup downloads are redacted', async t => {
+  const f = await setup(t);
+  const setupResponse = await f.request('/api/auth/setup', { method: 'POST', body: { password: 'admin-test-password-123' }, csrf: false });
+  assert.equal(setupResponse.status, 200, setupResponse.text);
+  f.session.csrf = setupResponse.json.csrfToken;
+
+  const rawGet = await f.request('/api/config/export?mode=raw&download=1');
+  assert.equal(rawGet.status, 403, rawGet.text);
+  assert.equal(rawGet.json.error.code, 'step_up_required');
+
+  const redactedGet = await f.request('/api/config/export?mode=redacted');
+  assert.equal(redactedGet.status, 200);
+  assert.equal(redactedGet.json.redacted, true);
+  assert.equal(JSON.stringify(redactedGet.json).includes(UPSTREAM_KEY), false);
+
+  const withoutCsrf = await f.request('/api/config/export', { method: 'POST', body: { mode: 'raw', password: 'admin-test-password-123' }, csrf: false });
+  assert.equal(withoutCsrf.status, 403, withoutCsrf.text);
+
+  const wrongPassword = await f.request('/api/config/export', { method: 'POST', body: { mode: 'raw', password: 'wrong-password-123' } });
+  assert.equal(wrongPassword.status, 401, wrongPassword.text);
+
+  const raw = await f.request('/api/config/export', { method: 'POST', body: { mode: 'raw', password: 'admin-test-password-123' } });
+  assert.equal(raw.status, 200, raw.text);
+  assert.equal(raw.json.config.groups[0].upstreamApiKey, UPSTREAM_KEY);
+  assert.equal(raw.json.config.groups[0].virtualApiKeys[0], CLIENT_KEY);
+
+  const created = await f.request('/api/backups', { method: 'POST', body: { label: 'redact' } });
+  assert.equal(created.status, 200, created.text);
+  const proxiedDownload = await fetch(f.base + '/api/backups/' + encodeURIComponent(created.json.name) + '/download', { headers: { cookie: f.session.cookie, 'x-forwarded-for': '203.0.113.9' } });
+  assert.equal(proxiedDownload.status, 403, 'backup download must be local-only');
+  const proxiedPassword = await f.request('/api/auth/password', { method: 'POST', body: { currentPassword: 'admin-test-password-123', newPassword: 'another-password-123' }, headers: { 'x-forwarded-for': '203.0.113.9' } });
+  assert.equal(proxiedPassword.status, 403, 'password change must be local-only');
+  const proxiedState = await f.request('/api/state', { headers: { 'x-forwarded-for': '203.0.113.9' } });
+  assert.equal(proxiedState.status, 200, 'authenticated management stays available through a tunnel');
+  const download = await fetch(f.base + '/api/backups/' + encodeURIComponent(created.json.name) + '/download', { headers: { cookie: f.session.cookie } });
+  assert.equal(download.status, 200);
+  assert.match(download.headers.get('content-disposition') || '', /redacted\.json/);
+  const text = await download.text();
+  assert.equal(text.includes(UPSTREAM_KEY), false, 'backup download must not contain upstream keys');
+  assert.equal(text.includes(CLIENT_KEY), false, 'backup download must not contain virtual keys');
+  assert.match(text, /__REDACTED__/);
+});
+
+test('first-time setup requires a loopback Host header even behind a local tunnel', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'mr-admin-setup-host-'));
+  const configPath = join(dir, 'local.json');
+  await writeFile(configPath, JSON.stringify({
+    groups: [{ id: 'smoke', virtualApiKeys: [CLIENT_KEY], routes: { chat: { baseURL: 'http://127.0.0.1:1/v1', upstreamApiKey: 'sk-test-upstream' } }, models: [{ id: 'smoke-model' }] }],
+  }));
+  await chmod(configPath, 0o600);
+  const admin = await createAdmin({
+    configPath,
+    runDir: join(dir, 'run'),
+    authPath: join(dir, 'admin-auth.private.json'),
+    adminPort: 0,
+    routerPort: () => 0,
+    allowedHosts: ['admin.example.com'],
+    reload: async () => {},
+  });
+  await new Promise((resolve, reject) => { admin.once('error', reject); admin.listen(0, '127.0.0.1', () => { admin.off('error', reject); resolve(); }); });
+  t.after(async () => { admin.closeAllConnections?.(); await new Promise(resolve => admin.close(resolve)); });
+  const port = admin.address().port;
+  const attempt = (host, extra = {}) => new Promise((resolve, reject) => {
+    const body = JSON.stringify({ password: 'admin-test-password-123' });
+    const request = http.request({
+      hostname: '127.0.0.1', port, path: '/api/auth/setup', method: 'POST',
+      headers: { host, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...extra },
+    }, response => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { text += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, text }));
+    });
+    request.on('error', reject);
+    request.end(body);
+  });
+  const tunnel = await attempt('admin.example.com:' + port);
+  assert.equal(tunnel.status, 403, tunnel.text);
+  const forwarded = await attempt('127.0.0.1:' + port, { 'x-forwarded-for': '203.0.113.9' });
+  assert.equal(forwarded.status, 403, 'forwarded identity headers must never count as local');
+  const local = await attempt('127.0.0.1:' + port);
+  assert.equal(local.status, 200, local.text);
+});
