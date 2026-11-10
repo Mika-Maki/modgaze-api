@@ -163,7 +163,7 @@ function layout() {
     });
     svg.innerHTML = '';
     clearActive();
-    requestAnimationFrame(function () { stage.classList.add('orbit-ready'); });
+    requestAnimationFrame(function () { markReady(stage); });
     return;
   }
 
@@ -208,7 +208,12 @@ function layout() {
   const previous = activeModule;
   activeModule = null;
   setActive(previous);
-  requestAnimationFrame(function () { stage.classList.add('orbit-ready'); });
+  requestAnimationFrame(function () { markReady(stage); });
+}
+
+function markReady(stage) {
+  if (stage.classList.contains('is-init')) return;
+  stage.classList.add('orbit-ready');
 }
 
 function scheduleLayout() {

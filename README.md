@@ -8,10 +8,10 @@
 
 ## Quickstart
 
-要求 Node.js 22+，零第三方依赖，不需要 `npm install`。默认路由监听 `http://127.0.0.1:8787`，管理台监听 `http://127.0.0.1:8788`，默认都只绑定回环地址。
+要求 Node.js 22+，零第三方依赖，不需要 `npm install`。默认路由监听 `http://127.0.0.1:8787`，管理台监听 `http://127.0.0.1:8788`，默认都只绑定回环地址。下文 `/path/to/modgaze-api` 为项目目录示例，请替换为实际克隆路径。
 
 ```bash
-cd /root/amerge
+cd /path/to/modgaze-api
 npm run import          # 首次生成最小 config/local.json，并一次性打印本地 key
 npm run check           # 校验配置
 npm run service:start   # 后台启动；前台调试用 npm start
@@ -40,7 +40,7 @@ curl -fsS http://127.0.0.1:8787/v1/models \
 重置管理员密码（在服务器终端执行，支持任意时候本地重置）：
 
 ```bash
-cd /root/amerge
+cd /path/to/modgaze-api
 npm run admin:password                 # 交互式设置新密码
 npm run admin:password -- --status     # 查看是否已设置（不显示哈希）
 npm run admin:password -- --generate   # 生成随机密码，明文只打印一次
@@ -119,7 +119,7 @@ OpenAI 客户端 base_url = <http://127.0.0.1:8787/v1>；Anthropic 客户端 bas
 以下 API_KEY 使用 shell 环境变量，不能用一个供应商的 key 调另一个分组：
 
 ~~~bash
-cd /root/amerge
+cd /path/to/modgaze-api
 read -rsp 'API key: ' API_KEY; echo
 export API_KEY
 curl --fail-with-body -sS http://127.0.0.1:8787/v1/models \
@@ -166,7 +166,7 @@ unset API_KEY
 在 WebUI「本地密钥」里可以直接生成、复制、重命名、轮换和撤销虚拟 Key，保存后立即热重载，不需要重启。也可以继续用命令行批量补齐当前导入配置：
 
 ```bash
-cd /root/amerge
+cd /path/to/modgaze-api
 npm run virtual-keys
 chmod 600 config/local.json config/virtual-keys.private.json
 npm run check

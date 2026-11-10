@@ -192,7 +192,11 @@ function applyTheme() {
   // Modgaze has one visual state: the abyss. Dark mode is not a preference.
   app.theme = 'dark';
   document.documentElement.dataset.theme = 'dark';
-  if (localStorage.getItem('mr-theme') !== null) localStorage.removeItem('mr-theme');
+  // Migrating an obsolete visual preference is optional. Privacy settings or
+  // embedded browsers can deny site storage without denying the session cookie.
+  try {
+    if (localStorage.getItem('mr-theme') !== null) localStorage.removeItem('mr-theme');
+  } catch {}
 }
 function toggleTheme() {
   applyTheme();

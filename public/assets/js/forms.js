@@ -111,7 +111,7 @@ export async function handleSubmit(event) {
       if (!password) throw new Error('请输入管理员密码');
       const result = await api('/api/auth/login', { method: 'POST', body: { password }, csrf: false });
       app.csrf = result.csrfToken;
-      await enterApp();
+      await enterApp({ verifySession: true });
     });
     return;
   }
@@ -123,7 +123,7 @@ export async function handleSubmit(event) {
       if (password !== confirm) throw new Error('两次输入的密码不一致');
       const result = await api('/api/auth/setup', { method: 'POST', body: { password }, csrf: false });
       app.csrf = result.csrfToken;
-      await enterApp();
+      await enterApp({ verifySession: true });
     });
     return;
   }

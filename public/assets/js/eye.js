@@ -1,8 +1,16 @@
 /* Modgaze — the abyssal eye.
-   Pure SVG geometry; JS only maps the pointer to a gaze vector. */
+   Pure SVG geometry; JS only maps the pointer to a gaze vector.
+   The same coordinates also drive the CRT build sequence (see crt.css):
+   the wireframe, the material fill and the final eye all share one frame,
+   so the eye is constructed in place instead of being swapped. */
 
 const TAU = Math.PI * 2;
 const EYE = { x: 500, y: 308, iris: 160, pupil: 58 };
+const EYE_PATH = 'M 54 312 C 168 194 312 126 470 116 C 650 104 816 184 946 305 C 824 426 666 500 492 508 C 320 516 166 436 54 312 Z';
+const LID_TOP_LEFT = 'M 54 312 C 168 194 312 126 470 116';
+const LID_TOP_RIGHT = 'M 946 305 C 816 184 650 104 470 116';
+const LID_BOTTOM_LEFT = 'M 54 312 C 166 436 320 516 492 508';
+const LID_BOTTOM_RIGHT = 'M 946 305 C 824 426 666 500 492 508';
 let eyeBound = false;
 let pointerFrame = 0;
 let pendingPointer = null;
@@ -27,9 +35,20 @@ function buildFibers(prefix) {
     const color = warm > 0.83 ? '#eac287' : warm > 0.42 ? '#a9582a' : '#5b2112';
     const opacity = 0.1 + noise(index, 5) * 0.36;
     const width = 0.45 + noise(index, 6) * 1.55;
-    rows.push('<line x1="' + x1.toFixed(2) + '" y1="' + y1.toFixed(2) + '" x2="' + x2.toFixed(2) + '" y2="' + y2.toFixed(2) + '" stroke="' + color + '" stroke-width="' + width.toFixed(2) + '" stroke-linecap="round" opacity="' + opacity.toFixed(2) + '"/>');
+    rows.push({ index, markup: '<line x1="' + x1.toFixed(2) + '" y1="' + y1.toFixed(2) + '" x2="' + x2.toFixed(2) + '" y2="' + y2.toFixed(2) + '" stroke="' + color + '" stroke-width="' + width.toFixed(2) + '" stroke-linecap="round" opacity="' + opacity.toFixed(2) + '"/>' });
   }
-  return rows.join('');
+  return rows;
+}
+
+function fiberLayers(prefix) {
+  // The same fiber geometry, split into six growing shells for the build pass.
+  const rows = buildFibers(prefix);
+  const shells = 6;
+  const groups = Array.from({ length: shells }, function () { return []; });
+  rows.forEach(function (row) { groups[row.index % shells].push(row.markup); });
+  return groups.map(function (group, index) {
+    return '<g class="cv-fiber" style="--cv-shell:' + index + '">' + group.join('') + '</g>';
+  }).join('');
 }
 
 function buildCrypts() {
@@ -85,7 +104,7 @@ function buildPupil() {
   return 'M ' + points.join(' L ') + ' Z';
 }
 
-function buildVeins(prefix) {
+function buildVeinPaths(prefix) {
   const rows = [];
   for (const side of [-1, 1]) {
     for (let index = 0; index < 17; index += 1) {
@@ -109,13 +128,51 @@ function buildVeins(prefix) {
       }
     }
   }
-  return rows.join('');
+  return rows;
 }
 
-function eyeMarkup(prefix = 'core') {
+function buildVeinLayers(prefix) {
+  const rows = buildVeinPaths(prefix);
+  const layers = 3;
+  const groups = Array.from({ length: layers }, function () { return []; });
+  rows.forEach(function (markup, index) { groups[index % layers].push(markup); });
+  return groups.map(function (group, index) {
+    return '<g class="cv-vein" style="--cv-layer:' + index + '">' + group.join('') + '</g>';
+  }).join('');
+}
+
+function initMarkup(id) {
+  // Build pass: calibration dot, locator axes, concentric rings and eyelid edges.
+  // Every coordinate is the final eye's own coordinate, so nothing moves later.
+  const cx = EYE.x;
+  const cy = EYE.y;
+  return '<g class="eye-init" aria-hidden="true">' +
+    '<g class="cv-cal">' +
+      '<path class="cv-hair" d="M ' + (cx - 30) + ' ' + cy + ' H ' + (cx + 30) + ' M ' + cx + ' ' + (cy - 30) + ' V ' + (cy + 30) + '"/>' +
+      '<path class="cv-hair cv-hair-corner" d="M ' + (cx - 13) + ' ' + (cy - 9) + ' h -7 v 7 M ' + (cx + 13) + ' ' + (cy - 9) + ' h 7 v 7 M ' + (cx - 13) + ' ' + (cy + 9) + ' h -7 v -7 M ' + (cx + 13) + ' ' + (cy + 9) + ' h 7 v -7"/>' +
+      '<circle class="cv-core" cx="' + cx + '" cy="' + cy + '" r="2.6"/>' +
+    '</g>' +
+    '<g class="cv-axes">' +
+      '<line class="cv-axis" x1="54" y1="312" x2="946" y2="305"/>' +
+      '<line class="cv-axis" x1="500" y1="116" x2="500" y2="508"/>' +
+    '</g>' +
+    '<circle class="cv-ring cv-pupil-ring" cx="' + cx + '" cy="' + cy + '" r="' + EYE.pupil + '" pathLength="1"/>' +
+    '<circle class="cv-ring cv-iris-ring" cx="' + cx + '" cy="' + cy + '" r="' + EYE.iris + '" pathLength="1"/>' +
+    '<path class="cv-lid cv-lid-ul" d="' + LID_TOP_LEFT + '" pathLength="1"/>' +
+    '<path class="cv-lid cv-lid-ur" d="' + LID_TOP_RIGHT + '" pathLength="1"/>' +
+    '<path class="cv-lid cv-lid-ll" d="' + LID_BOTTOM_LEFT + '" pathLength="1"/>' +
+    '<path class="cv-lid cv-lid-lr" d="' + LID_BOTTOM_RIGHT + '" pathLength="1"/>' +
+    '<g clip-path="url(#' + id('eye-clip') + ')">' +
+      '<rect class="cv-scan" x="30" y="-170" width="940" height="170" fill="url(#' + id('scan') + ')"/>' +
+    '</g>' +
+  '</g>';
+}
+
+function eyeMarkup(prefix = 'core', options = {}) {
   const id = value => prefix + '-' + value;
+  const build = options.init !== false;
   const pupilPath = buildPupil();
-  return '<svg class="abyss-eye" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">' +
+  return '<svg class="abyss-eye' + (build ? ' abyss-eye--built' : ' abyss-eye--final') + '" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">' +
     '<defs>' +
       '<radialGradient id="' + id('aura') + '" cx="50%" cy="50%" r="50%">' +
         '<stop offset="0" stop-color="#c9753e" stop-opacity=".35"/>' +
@@ -199,8 +256,15 @@ function eyeMarkup(prefix = 'core') {
         '<stop offset=".5" stop-color="#ffe1b5" stop-opacity=".42"/>' +
         '<stop offset="1" stop-color="#f3b37c" stop-opacity="0"/>' +
       '</linearGradient>' +
+      '<linearGradient id="' + id('scan') + '" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0" stop-color="#ffb545" stop-opacity="0"/>' +
+        '<stop offset=".38" stop-color="#ffcf86" stop-opacity=".28"/>' +
+        '<stop offset=".56" stop-color="#ffe6bd" stop-opacity=".44"/>' +
+        '<stop offset=".74" stop-color="#ffb545" stop-opacity=".2"/>' +
+        '<stop offset="1" stop-color="#ffb545" stop-opacity="0"/>' +
+      '</linearGradient>' +
       '<clipPath id="' + id('eye-clip') + '">' +
-        '<path d="M 54 312 C 168 194 312 126 470 116 C 650 104 816 184 946 305 C 824 426 666 500 492 508 C 320 516 166 436 54 312 Z"/>' +
+        '<path d="' + EYE_PATH + '"/>' +
       '</clipPath>' +
       '<clipPath id="' + id('iris-clip') + '">' +
         '<circle cx="' + EYE.x + '" cy="' + EYE.y + '" r="' + (EYE.iris + 5) + '"/>' +
@@ -237,31 +301,36 @@ function eyeMarkup(prefix = 'core') {
       '<path d="M 36 462 C 92 504 148 538 218 554" fill="none" stroke="#531518" stroke-width="1.6" opacity=".16"/>' +
       '<path d="M 964 456 C 906 500 844 526 776 540" fill="none" stroke="#56171a" stroke-width="1.6" opacity=".14"/>' +
     '</g>' +
-    '<g clip-path="url(#' + id('eye-clip') + ')">' +
-      '<path d="M 54 312 C 168 194 312 126 470 116 C 650 104 816 184 946 305 C 824 426 666 500 492 508 C 320 516 166 436 54 312 Z" fill="url(#' + id('sclera') + ')"/>' +
-      '<circle cx="500" cy="308" r="300" fill="url(#' + id('sclera-bloom') + ')"/>' +
-      '<ellipse cx="392" cy="244" rx="220" ry="128" fill="url(#' + id('cold') + ')" opacity=".34" filter="url(#' + id('soft-small') + ')"/>' +
-      '<ellipse cx="500" cy="160" rx="438" ry="118" fill="#190609" opacity=".5" filter="url(#' + id('soft-small') + ')"/>' +
-      '<ellipse cx="500" cy="486" rx="400" ry="84" fill="#3b0c0f" opacity=".38" filter="url(#' + id('soft-small') + ')"/>' +
-      '<ellipse cx="80" cy="312" rx="66" ry="46" fill="#67231f" opacity=".32" filter="url(#' + id('soft-small') + ')"/>' +
-      '<ellipse cx="920" cy="308" rx="70" ry="44" fill="#58191c" opacity=".28" filter="url(#' + id('soft-small') + ')"/>' +
-      '<path d="M 70 310 C 96 289 112 305 118 324 C 104 342 82 349 70 332 Z" fill="url(#' + id('caruncle') + ')" opacity=".65"/>' +
-      '<g class="eye-veins" opacity=".86">' + buildVeins(prefix) + '</g>' +
-      '<ellipse cx="500" cy="466" rx="342" ry="42" fill="#f2c3a4" opacity=".13" filter="url(#' + id('soft-small') + ')"/>' +
-      '<ellipse cx="388" cy="298" rx="175" ry="54" transform="rotate(-8 388 298)" fill="#fff0da" opacity=".06" filter="url(#' + id('soft-small') + ')"/>' +
+    '<g class="eye-body" clip-path="url(#' + id('eye-clip') + ')">' +
+      '<g class="eye-material">' +
+      '<g class="cv-sclera">' +
+        '<path d="' + EYE_PATH + '" fill="url(#' + id('sclera') + ')"/>' +
+        '<circle cx="500" cy="308" r="300" fill="url(#' + id('sclera-bloom') + ')"/>' +
+        '<ellipse cx="392" cy="244" rx="220" ry="128" fill="url(#' + id('cold') + ')" opacity=".34" filter="url(#' + id('soft-small') + ')"/>' +
+        '<ellipse cx="500" cy="160" rx="438" ry="118" fill="#190609" opacity=".5" filter="url(#' + id('soft-small') + ')"/>' +
+        '<ellipse cx="500" cy="486" rx="400" ry="84" fill="#3b0c0f" opacity=".38" filter="url(#' + id('soft-small') + ')"/>' +
+        '<ellipse cx="80" cy="312" rx="66" ry="46" fill="#67231f" opacity=".32" filter="url(#' + id('soft-small') + ')"/>' +
+        '<ellipse cx="920" cy="308" rx="70" ry="44" fill="#58191c" opacity=".28" filter="url(#' + id('soft-small') + ')"/>' +
+        '<path d="M 70 310 C 96 289 112 305 118 324 C 104 342 82 349 70 332 Z" fill="url(#' + id('caruncle') + ')" opacity=".65"/>' +
+        '<ellipse cx="500" cy="466" rx="342" ry="42" fill="#f2c3a4" opacity=".13" filter="url(#' + id('soft-small') + ')"/>' +
+        '<ellipse cx="388" cy="298" rx="175" ry="54" transform="rotate(-8 388 298)" fill="#fff0da" opacity=".06" filter="url(#' + id('soft-small') + ')"/>' +
+      '</g>' +
+      '<g class="eye-veins" opacity=".86">' + buildVeinLayers(prefix) + '</g>' +
       '<g class="eye-gaze">' +
         '<circle cx="500" cy="308" r="182" fill="#240a08" opacity=".8" filter="url(#' + id('soft-small') + ')"/>' +
         '<g clip-path="url(#' + id('iris-clip') + ')">' +
-          '<circle cx="500" cy="308" r="166" fill="url(#' + id('iris') + ')"/>' +
-          '<g filter="url(#' + id('iris-rough') + ')" opacity=".95">' + buildFibers(prefix) + '</g>' +
-          '<g opacity=".9">' + buildFlecks() + '</g>' +
-          '<g opacity=".92">' + buildCrypts() + '</g>' +
+          '<circle class="cv-iris-base" cx="500" cy="308" r="166" fill="url(#' + id('iris') + ')"/>' +
+          '<g class="cv-fibers" filter="url(#' + id('iris-rough') + ')" opacity=".95">' + fiberLayers(prefix) + '</g>' +
+          '<g class="cv-crypts" opacity=".9">' + buildCrypts() + '</g>' +
+          '<g class="cv-iris-detail">' +
+          '<g class="cv-flecks" opacity=".9">' + buildFlecks() + '</g>' +
           '<ellipse cx="468" cy="254" rx="88" ry="44" transform="rotate(-28 468 254)" fill="#2c0a06" opacity=".16" filter="url(#' + id('soft-small') + ')"/>' +
           '<circle cx="500" cy="308" r="91" fill="#3d100a" opacity=".42" filter="url(#' + id('soft-small') + ')"/>' +
           '<path d="' + buildCollarette() + '" fill="none" stroke="#e7b173" stroke-width="3.2" opacity=".19" filter="url(#' + id('soft-small') + ')"/>' +
           '<path d="' + buildCollarette() + '" fill="none" stroke="#f6cd91" stroke-width="0.85" opacity=".32"/>' +
           '<circle cx="500" cy="308" r="166" fill="url(#' + id('iris-depth') + ')"/>' +
-          '<path d="M 377 274 C 397 231 448 200 512 192 C 468 215 421 250 397 296 Z" fill="url(#' + id('glint') + ')" opacity=".5" filter="url(#' + id('soft-small') + ')"/>' +
+          '</g>' +
+          '<path class="cv-glint" d="M 377 274 C 397 231 448 200 512 192 C 468 215 421 250 397 296 Z" fill="url(#' + id('glint') + ')" opacity=".5" filter="url(#' + id('soft-small') + ')"/>' +
           '<ellipse cx="432" cy="236" rx="21" ry="8" transform="rotate(-35 432 236)" fill="#c8ede4" opacity=".25" filter="url(#' + id('soft-small') + ')"/>' +
           '<ellipse cx="570" cy="370" rx="11" ry="7" transform="rotate(-26 570 370)" fill="#fff2d8" opacity=".42" filter="url(#' + id('soft-small') + ')"/>' +
           '<ellipse cx="522" cy="232" rx="18" ry="31" transform="rotate(19 522 232)" fill="#ffe9c8" opacity=".13" filter="url(#' + id('soft-small') + ')"/>' +
@@ -274,7 +343,7 @@ function eyeMarkup(prefix = 'core') {
           '<g class="eye-pupil-core">' +
             '<path d="' + pupilPath + '" fill="url(#' + id('pupil') + ')" stroke="#3a120e" stroke-width="2"/>' +
             '<circle cx="500" cy="308" r="49" fill="#020102" opacity=".9"/>' +
-            '<path d="' + pupilPath + '" fill="none" stroke="#d58c54" stroke-width="1.2" opacity=".3"/>' +
+            '<path class="cv-pupil-rim" d="' + pupilPath + '" fill="none" stroke="#d58c54" stroke-width="1.2" opacity=".3"/>' +
           '</g>' +
         '</g>' +
         '<circle class="iris-shock" cx="500" cy="308" r="177" fill="none" stroke="#ffd3a1" stroke-width="1.4"/>' +
@@ -285,7 +354,9 @@ function eyeMarkup(prefix = 'core') {
       '</g>' +
       '<ellipse cx="500" cy="152" rx="358" ry="122" fill="#130507" opacity=".5" filter="url(#' + id('soft-small') + ')"/>' +
       '<ellipse cx="500" cy="505" rx="332" ry="34" fill="#f9d6b9" opacity=".16" filter="url(#' + id('soft-small') + ')"/>' +
+      '</g>' +
     '</g>' +
+    (build ? initMarkup(id) : '') +
     '<g class="eye-lid-glow" fill="none">' +
       '<path d="M 54 312 C 168 194 312 126 470 116 C 650 104 816 184 946 305" stroke="#f1ae72" stroke-width="1" opacity=".2"/>' +
       '<path d="M 54 312 C 166 436 320 516 492 508 C 666 500 824 426 946 305" stroke="#ffd0a1" stroke-width="1" opacity=".2"/>' +

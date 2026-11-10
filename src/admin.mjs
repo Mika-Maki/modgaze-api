@@ -478,6 +478,18 @@ export async function createAdmin(options = {}) {
     try {
       assertTrustedRequest(req);
       const url = new URL(req.url, 'http://127.0.0.1');
+      // Upgrade the document at the trusted public proxy, before an HTTP page
+      // can issue module requests with an Origin that is deliberately rejected.
+      // This header only selects a redirect to the configured HTTPS origin; it
+      // never establishes host/transport trust or bypasses Origin validation.
+      if (req[PUBLIC_ORIGIN_REQUEST] && !req.socket.encrypted &&
+          req.headers['x-forwarded-proto'] === 'http' &&
+          (req.method === 'GET' || req.method === 'HEAD') &&
+          (url.pathname === '/' || url.pathname === '/index.html')) {
+        res.writeHead(308, { location: publicOrigin.origin + url.pathname + url.search, 'cache-control': 'no-store' });
+        res.end();
+        return;
+      }
       if (url.pathname === '/healthz') { sendJson(res, 200, { status: 'ok', service: 'admin' }); return; }
       await refreshRateLimits();
       if (res.destroyed || res.writableEnded) return;

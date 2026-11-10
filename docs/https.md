@@ -11,7 +11,7 @@ Modgaze 的 HTTPS 是可选的两组监听：API TLS 默认 `https://127.0.0.1:8
 需要本机有 `openssl`：
 
 ```bash
-cd /root/amerge
+cd /path/to/modgaze-api
 npm run tls:init
 ```
 
@@ -58,7 +58,7 @@ npm run tls:init
 ## 3. 校验并重启
 
 ```bash
-cd /root/amerge
+cd /path/to/modgaze-api
 npm run check
 npm run service:restart        # 前台运行时直接 npm start
 curl --cacert config/tls/ca.crt https://127.0.0.1:8786/healthz
@@ -72,11 +72,11 @@ curl --cacert config/tls/ca.crt https://127.0.0.1:8786/healthz
 
 ```bash
 # curl
-curl --cacert /root/amerge/config/tls/ca.crt https://127.0.0.1:8786/v1/models \
+curl --cacert /path/to/modgaze-api/config/tls/ca.crt https://127.0.0.1:8786/v1/models \
   -H "Authorization: Bearer <key>"
 
 # Node 客户端
-NODE_EXTRA_CA_CERTS=/root/amerge/config/tls/ca.crt node your-client.mjs
+NODE_EXTRA_CA_CERTS=/path/to/modgaze-api/config/tls/ca.crt node your-client.mjs
 ```
 
 - OpenAI SDK：base_url = `https://127.0.0.1:8786/v1`

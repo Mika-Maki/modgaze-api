@@ -2,6 +2,7 @@
 import { $, icon, esc, fmtNum, fmtPercent, app } from "../core.js";
 import { eyeMarkup } from "../eye.js";
 import { initOrbit } from "../orbit.js";
+import { beginCrt } from "../crt.js";
 
 function card(options) {
   return '<a class="orbit-card" href="' + options.href + '" data-module="' + options.module + '" data-orbit="' + options.orbit + '" data-action="enter-module" data-href="' + options.href + '" style="--i:' + options.index + '" aria-label="' + esc(options.title) + '">' +
@@ -75,9 +76,16 @@ function renderHub() {
   ];
   return '<section id="hub-stage" class="hub-stage' + (healthy ? ' is-healthy' : ' is-dormant') + '" aria-label="Modgaze 控制中枢">' +
     '<div class="hub-aura" aria-hidden="true"><i></i><i></i><i></i></div>' +
+    '<div class="crt-overlay" aria-hidden="true"><div class="crt-amber"></div><div class="crt-lines"></div></div>' +
     '<div class="hub-axis" aria-hidden="true"><span class="hub-axis-line"></span><span class="hub-axis-label">ABYSSAL CORE / 01</span></div>' +
     '<div id="hub-eye" class="hub-eye">' +
-      '<div class="eye-shell">' + eyeMarkup('core') + '<span class="eye-grain" aria-hidden="true"></span></div>' +
+      '<div class="eye-shell">' + eyeMarkup('core') + eyeMarkup('final', { init: false }) + '<span class="eye-grain" aria-hidden="true"></span>' +
+        '<div class="hub-init-readout" aria-hidden="true">' +
+          '<span style="--n:0"><em>MODGAZE</em><b>INIT</b></span>' +
+          '<span style="--n:1"><em>DISPLAY BUFFER</em><b>OK</b></span>' +
+          '<span style="--n:2"><em>CORE GEOMETRY</em><b>INIT</b></span>' +
+        '</div>' +
+      '</div>' +
       '<div class="eye-caption">' +
         '<span class="eye-kicker">THE WATCHER</span><span class="eye-rule"></span><span class="eye-status"><i></i>' + (healthy ? 'AWAKE' : 'DORMANT') + '</span>' +
       '</div>' +
@@ -98,6 +106,9 @@ function renderHub() {
 function mountHub() {
   const stage = $('#hub-stage');
   if (!stage) return;
+  // Claim the stage before the first layout pass so the eye, the cards and the
+  // chrome are never painted in their finished state by accident.
+  beginCrt(stage);
   initOrbit(stage);
 }
 

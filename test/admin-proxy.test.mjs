@@ -84,3 +84,20 @@ test('public origin requires an explicit HTTPS origin, not a wildcard or URL pat
     await assert.rejects(createAdmin({ publicOrigin }), /Invalid adminPublicOrigin/);
   }
 });
+
+test('HTTP public document entry redirects to its configured HTTPS origin before modules load', async t => {
+  const { request } = await fixture(t);
+  for (const path of ['/', '/index.html?next=%2Fgroups']) {
+    const response = await request(path, { headers: { 'x-forwarded-proto': 'http' } });
+    assert.equal(response.status, 308);
+    assert.equal(response.headers.location, 'https://web.example' + path);
+    assert.equal(response.headers['cache-control'], 'no-store');
+    assert.equal(response.headers['set-cookie'], undefined);
+  }
+  assert.equal((await request('/', { headers: { 'x-forwarded-proto': 'https' } })).status, 200);
+  assert.equal((await request('/')).status, 200, 'a local proxy with no forwarded scheme remains supported');
+  const insecureModule = await request('/assets/app.js', { headers: { origin: 'http://web.example', 'x-forwarded-proto': 'http' } });
+  assert.equal(insecureModule.status, 403, 'do not weaken HTTPS Origin validation to make HTTP modules work');
+  assert.equal((await request('/api/auth/status', { headers: { origin: 'http://web.example', 'x-forwarded-proto': 'http' } })).status, 403);
+  assert.equal((await request('/', { headers: { host: 'evil.example', 'x-forwarded-proto': 'http' } })).status, 403);
+});

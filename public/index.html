@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark">
   <meta name="robots" content="noindex, nofollow">
   <title>Modgaze · 控制中枢</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%23e0a267'/%3E%3Cstop offset='1' stop-color='%236b1b1c'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='%230a0305'/%3E%3Cpath d='M4 16c3.6-5.5 7.7-8 12-8s8.4 2.5 12 8c-3.6 5.5-7.7 8-12 8S7.6 21.5 4 16Z' fill='none' stroke='url(%23g)' stroke-width='1.8'/%3E%3Ccircle cx='16' cy='16' r='3.6' fill='%23e7b174'/%3E%3Ccircle cx='16' cy='16' r='1.7' fill='%230a0305'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%23e0a267'/%3E%3Cstop offset='1' stop-color='%236b1b1c'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='%230a0305'/%3E%3Cpath d='M4 16c3.6-5.5 7.7-8 12-8s8.4 2.5 12 8c-3.6 5.5-7.7 8-12 8S7.6 21.5 4 16Z' fill='none' stroke='url(%23g)' stroke-width='1.8'/%3E%3Ccircle cx='16' cy='16' r='3.6' fill='%23e7b174'/%3E%3Ccircle cx='16' cy='16' r='1.6' fill='%230a0305'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/styles.css">
   <link rel="stylesheet" href="/assets/abyss.css">
 </head>
@@ -53,38 +53,57 @@
     <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3M10 10h4v4h-4z"/></symbol>
   </svg>
 
-  <div id="boot-screen" class="boot-screen">
-    <div class="boot-halo" aria-hidden="true"></div>
-    <div class="boot-logo"><svg class="icon"><use href="#i-logo"/></svg></div>
-    <div class="boot-title">MODGAZE</div>
-    <div class="boot-eyebrow">ABYSSAL CONTROL PLANE</div>
-    <div class="boot-bar"><span></span></div>
-    <div class="boot-hint">正在连接本地管理台…</div>
-  </div>
-
-  <section id="auth-screen" class="auth-screen hidden">
+  <section id="auth-screen" class="auth-screen">
     <div class="auth-atmosphere" aria-hidden="true">
-      <div class="auth-glow"></div>
-      <div class="auth-ocular"></div>
-      <div class="auth-grain"></div>
+      <div class="auth-phosphor"></div>
+      <div class="auth-scan"></div>
+      <div class="auth-vignette"></div>
+      <div class="crt-lines"></div>
     </div>
     <div class="auth-layout">
       <div class="auth-brand">
         <div class="brand-lockup"><span class="brand-orb"><svg class="icon"><use href="#i-logo"/></svg></span><span>MODGAZE</span></div>
         <div class="auth-overline">ABYSSAL CONTROL PLANE · 01</div>
+        <div class="auth-scope" aria-hidden="true">
+          <svg class="auth-scope-svg" viewBox="0 0 1000 620" focusable="false">
+            <g class="scope-grid">
+              <line x1="500" y1="40" x2="500" y2="580"/>
+              <line x1="60" y1="308" x2="940" y2="308"/>
+              <circle cx="500" cy="308" r="232"/>
+            </g>
+            <g class="scope-eye">
+              <path class="scope-draw" pathLength="1" d="M 54 312 C 168 194 312 126 470 116 C 650 104 816 184 946 305"/>
+              <path class="scope-draw" pathLength="1" d="M 54 312 C 166 436 320 516 492 508 C 666 500 824 426 946 305"/>
+              <circle class="scope-draw scope-iris" pathLength="1" cx="500" cy="308" r="160"/>
+              <circle class="scope-draw scope-pupil" pathLength="1" cx="500" cy="308" r="58"/>
+              <path class="scope-cross" d="M 500 268 V 348 M 460 308 H 540"/>
+              <path class="scope-tick" d="M 54 312 h -16 M 946 305 h 16 M 500 96 v -16 M 500 520 v 16"/>
+            </g>
+          </svg>
+          <div class="auth-scope-readout">
+            <span><em>OPTIC LINK</em><b>STANDBY</b></span>
+            <span><em>PASSPHRASE</em><b>REQUIRED</b></span>
+          </div>
+        </div>
         <h1>本地模型路由，<br><span class="gradient-text">只凝视一个入口。</span></h1>
         <p class="auth-lead">分组、上游密钥、虚拟 Key、路由与模型，全部沉在同一个本地控制台里。客户端只拿到入口，真实凭证留在暗面。</p>
-        <ul class="auth-points">
-          <li><span class="point-icon"><svg class="icon"><use href="#i-shield"/></svg></span><div><b>加盐哈希存储</b><span>管理员密码使用 scrypt + 随机盐保存，从不落明文。</span></div></li>
-          <li><span class="point-icon"><svg class="icon"><use href="#i-activity"/></svg></span><div><b>热更新，不断流</b><span>保存配置后路由即时热重载，正在进行的请求不受影响。</span></div></li>
-          <li><span class="point-icon"><svg class="icon"><use href="#i-key"/></svg></span><div><b>虚拟 Key 隔离</b><span>客户端只拿本地 Key，真实上游密钥留在服务端。</span></div></li>
-        </ul>
+        <dl class="auth-spec">
+          <div><dt>STORAGE</dt><dd>scrypt + 随机盐，从不落明文</dd></div>
+          <div><dt>ROUTING</dt><dd>保存即热重载，不断流</dd></div>
+          <div><dt>KEYS</dt><dd>虚拟 Key 隔离，上游凭证不出本机</dd></div>
+        </dl>
         <div class="auth-footnote">MODGAZE · LOCAL ONLY · NO TELEMETRY</div>
       </div>
       <div class="auth-card-wrap">
         <div class="auth-card-frame" aria-hidden="true"></div>
         <div id="auth-card" class="auth-card">
-          <div class="auth-skeleton"><span></span><span></span><span></span></div>
+          <div id="boot-status" data-state="loading" role="status" aria-live="polite">
+            <h2 id="boot-title" class="auth-title">正在连接控制台</h2>
+            <p id="boot-message" class="auth-sub">正在加载界面并检查登录状态。如果长时间停留在此页面，请重新加载。</p>
+            <p id="boot-detail" class="auth-sub hidden"></p>
+            <a id="boot-retry" class="btn auth-submit" href="">重新加载</a>
+            <noscript><p class="auth-sub">控制台需要 JavaScript，请启用后重新加载。</p></noscript>
+          </div>
         </div>
         <div id="auth-reset-hint" class="auth-reset-hint hidden">
           忘记密码？在服务器终端运行 <code>npm run admin:password</code> 本地重置。
@@ -129,6 +148,6 @@
   <div id="modal-root" class="modal-root"></div>
   <div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
 
-  <script type="module" src="/assets/app.js"></script>
+  <script defer src="/assets/boot.js"></script>
 </body>
 </html>

@@ -13,7 +13,7 @@ test('management group limits hot-reload into the router, share keys, isolate gr
   const configPath = join(dir, 'config.json');
   await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
   const router = createRouter(config);
-  const admin = await createAdmin({ configPath, runDir: join(dir, 'run'), projectRoot: '/root/amerge', adminPort: 0, reload: next => router.reload(next) });
+  const admin = await createAdmin({ configPath, runDir: join(dir, 'run'), projectRoot: dir, adminPort: 0, reload: next => router.reload(next) });
   t.after(async () => { for (const server of [router, admin]) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } });
   const api = await listen(router), management = await listen(admin);
   const setup = await fetch(management + '/api/auth/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'synthetic-test-password-2026' }) });

@@ -255,7 +255,7 @@ function showReconnectOverlay() {
   const overlay = document.createElement('div');
   overlay.id = 'reconnect-overlay';
   overlay.className = 'reconnect-overlay';
-  overlay.innerHTML = '<div class="boot-logo">' + icon('logo') + '</div><b>正在重启服务…</b><span>页面会自动重连，请稍候。</span>';
+  overlay.innerHTML = '<div class="reconnect-signal" aria-hidden="true"><i></i></div><b>正在重启服务…</b><span>页面会自动重连，请稍候。</span>';
   document.body.appendChild(overlay);
   let attempts = 0;
   const timer = setInterval(async function () {
@@ -349,7 +349,12 @@ async function runAction(action, element, event) {
   if (action === 'close-sidebar') { closeSidebar(); return; }
   if (action === 'command') { openCommandPalette(); return; }
   if (action === 'retry-boot') { await bootAuth(); return; }
-  if (action === 'show-reset-help') { toast('本地重置密码', 'info', '在服务器终端运行：npm run admin:password'); return; }
+  if (action === 'show-reset-help') {
+    const hint = document.getElementById('auth-reset-hint');
+    if (hint) hint.classList.toggle('hidden');
+    else toast('本地重置密码', 'info', '在服务器终端运行：npm run admin:password');
+    return;
+  }
   if (action === 'toggle-password') {
     const input = document.getElementById(element.dataset.target);
     if (input) {

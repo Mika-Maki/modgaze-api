@@ -86,7 +86,7 @@ function handleHashChange() {
   if (app.authenticated && app.data) render();
 }
 
-function init() {
+async function init() {
   app.route = parseRoute();
   if (!location.hash) history.replaceState(null, '', '#/overview');
   applyTheme(app.theme);
@@ -101,7 +101,7 @@ function init() {
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden && app.authenticated) pollStats();
   });
-  bootAuth();
+  await bootAuth();
 }
 
-init();
+export { init };

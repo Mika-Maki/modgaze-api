@@ -2,6 +2,7 @@ import { $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABEL
 import { renderOverview, renderTrafficChart, updateLiveStats } from "./views/dashboard.js";
 import { renderHub, mountHub } from "./views/hub.js";
 import { cleanupOrbit } from "./orbit.js";
+import { standDownCrt } from "./crt.js";
 import { renderGroupsPage, filterGroups } from "./views/groups.js";
 import { renderGroupDetailPage } from "./views/group-detail.js";
 import { renderKeysPage, filterKeys } from "./views/keys.js";
@@ -62,7 +63,7 @@ function render() {
   }
   view.innerHTML = html;
   if (app.route.name === 'overview') mountHub();
-  else cleanupOrbit();
+  else { cleanupOrbit(); standDownCrt(); }
   applyKeyReveals();
   filterGroups();
   filterKeys();
@@ -74,14 +75,17 @@ function renderLoading() {
   const view = $('#view');
   if (!view) return;
   view.innerHTML = `
-    <div class="hub-loading" aria-label="正在加载控制中枢">
-      <div class="hub-loading-ocular"><i></i></div>
-      <div class="hub-loading-kicker">ABYSSAL CORE / BOOT</div>
-      <div class="hub-loading-title">正在唤醒深渊之眼</div>
-      <div class="hub-loading-track"><span></span></div>
+    <div class="hub-loading" aria-label="正在建立控制台几何">
+      <div class="hub-loading-signal" aria-hidden="true"><i></i></div>
+      <div class="hub-loading-readout" aria-hidden="true">
+        <span><em>MODGAZE</em><b>INIT</b></span>
+        <span><em>DISPLAY BUFFER</em><b>OK</b></span>
+        <span><em>CORE GEOMETRY</em><b>INIT</b></span>
+      </div>
     </div>`;
 }
 function renderFatal(error) {
+  standDownCrt();
   setShell('console');
   const view = $('#view');
   if (!view) return;
