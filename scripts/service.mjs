@@ -1,7 +1,9 @@
-import { mkdir, open, readFile, writeFile, unlink, stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { ensurePrivateDirectory, openPrivateFile, readPrivateFile, writePrivateFile, removePrivateFile } from './private-files.mjs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+process.umask(0o077);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const dir = resolve(root, 'run');
 const stateFile = resolve(dir, 'service.json');
@@ -10,9 +12,9 @@ const serverPath = resolve(root, 'src/server.mjs');
 const configPath = resolve(root, 'config/local.json');
 const action = process.argv[2] ?? 'status';
 if (!['start', 'stop', 'restart', 'status'].includes(action)) { console.error('Usage: node scripts/service.mjs start|stop|restart|status'); process.exit(2); }
-await mkdir(dir, { recursive: true, mode: 0o700 });
+await ensurePrivateDirectory(dir);
 let lock;
-try { lock = await open(lockFile, 'wx', 0o600); }
+try { lock = await openPrivateFile(lockFile, { create: true, exclusive: true }); }
 catch { console.error('Service operation locked; inspect run/service.lock before removing a stale lock.'); process.exit(1); }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function identity(pid) {
@@ -25,16 +27,18 @@ async function identity(pid) {
 }
 async function state() {
   try {
-    const stored = JSON.parse(await readFile(stateFile, 'utf8'));
-    return Number.isSafeInteger(stored.pid) && stored.pid > 1 && typeof stored.start === 'string' && stored.start === await identity(stored.pid) ? stored : null;
-  } catch { return null; }
+    const text = await readPrivateFile(stateFile);
+    if (text === null) return null;
+    const stored = JSON.parse(text);
+    return stored && Number.isSafeInteger(stored.pid) && stored.pid > 1 && typeof stored.start === 'string' && stored.start === await identity(stored.pid) ? stored : null;
+  } catch (error) { if (error instanceof SyntaxError) return null; throw error; }
 }
 async function stop() {
   const current = await state();
   if (!current) { console.log('Modgaze is not running'); return; }
   process.kill(current.pid, 'SIGTERM');
   for (let n = 0; n < 120; n++) {
-    if (!await state()) { await unlink(stateFile).catch(() => {}); console.log('Modgaze stopped'); return; }
+    if (!await state()) { await removePrivateFile(stateFile); console.log('Modgaze stopped'); return; }
     await pause(100);
   }
   throw new Error('Graceful stop timed out; process was not force-killed');
@@ -44,19 +48,24 @@ async function start() {
   if (current) { console.log('Modgaze already running: pid=' + current.pid); return; }
   const info = await stat(configPath);
   if (info.mode & 0o077) throw new Error('Config must have mode 0600');
-  const log = await open(resolve(dir, 'modgaze.log'), 'a', 0o600);
-  const child = spawn(process.execPath, [serverPath, '--config', configPath], { cwd: root, detached: true, stdio: ['ignore', log.fd, log.fd] });
-  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-  child.unref();
-  await log.close();
+  const log = await openPrivateFile(resolve(dir, 'modgaze.log'), { create: true, append: true });
+  let child;
+  try {
+    child = spawn(process.execPath, [serverPath, '--config', configPath], { cwd: root, detached: true, stdio: ['ignore', log.fd, log.fd] });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    child.unref();
+  } finally { await log.close(); }
   const started = await identity(child.pid);
   if (!started) throw new Error('Startup failed; inspect run/modgaze.log');
-  await writeFile(stateFile, JSON.stringify({ pid: child.pid, start: started }) + '\n', { mode: 0o600 });
+  await writePrivateFile(stateFile, JSON.stringify({ pid: child.pid, start: started }) + '\n');
   await pause(400);
   if (!await state()) throw new Error('Startup failed; inspect run/modgaze.log');
   console.log('Modgaze started: pid=' + child.pid + '; log=run/modgaze.log');
 }
 try {
+  // Repair an existing log even when start discovers an already running daemon.
+  try { await (await openPrivateFile(resolve(dir, 'modgaze.log'))).close(); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (action === 'stop' || action === 'restart') await stop();
   if (action === 'start' || action === 'restart') await start();
   if (action === 'status') {
@@ -65,4 +74,4 @@ try {
     if (!current) process.exitCode = 1;
   }
 } catch (error) { console.error(error.message); process.exitCode = 1; }
-finally { await lock.close(); await unlink(lockFile); }
+finally { await lock.close(); await removePrivateFile(lockFile); }

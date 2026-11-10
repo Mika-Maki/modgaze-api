@@ -183,7 +183,7 @@ npm run service:restart
 - 请求 JSON 在校验后规范化转发，避免重复 model / token / 对象引用字段被上游按不同规则解释；保留原生字段语义，配置 upstreamModel 或 defaults 时再应用对应覆盖/默认值。响应 JSON 和 SSE 保持流式字节转发（已配置凭据去敏除外），包括工具增量、usage、reasoning/signature、事件名和结束帧，带背压、解压后体积限制及客户端断开取消。
 - /v1/models 给出 context_window、max_output_tokens、input_modalities、reasoning_efforts、metadata_source、supported_endpoints。上下文容量是配置/本地适配器声明，**不是远端实测**；不会把容量误填成生成 max_tokens，不做估算 token 截断。
 - reasoningEfforts 作为发现元数据保留原映射（含 null），不是自动转换指令。客户端仍应发送所用协议的合法参数；例如 off:null 不代表必然关闭上游思考。
-- Responses 生命周期和 previous_response_id 通过调用 Key、分组、创建时模型路由及上游凭据指纹校验所有权；不同 Key 不互读，未知对象返回 404。所有权账本仅在内存保留（最多 10000 条，1 小时），重启前/过期/淘汰对象拒绝访问；未实现归属映射的 conversation / item_reference 引用拒绝，不再直接透传。
+- Responses 生命周期和 previous_response_id 通过调用 Key、分组、创建时模型路由及上游凭据指纹校验所有权；不同 Key 不互读，未知对象返回 404。所有权账本仅在内存保留（最多 10000 条，1 小时），重启前/过期/淘汰对象拒绝访问；未实现归属映射的 conversation / item_reference 引用拒绝，不再直接透传。文件 ID、向量库 ID、已有容器、保存的 Prompt ID 和 Chat 音频 ID 等未记账上游资源引用也在转发前拒绝（403 / resource_reference_error）；内联文件/图片/音频、普通文本、工具 schema 与参数不受影响。Code Interpreter 仅允许无资源引用的显式 auto 容器。详见 [资源授权与部署加固](docs/security-limits.md#资源引用默认拒绝)。
 
 ## 服务端配置
 

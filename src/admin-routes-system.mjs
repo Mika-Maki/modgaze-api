@@ -12,7 +12,7 @@ const isObject = value => value !== null && typeof value === 'object' && !Array.
 // Read-only dashboards and mutating system actions share the same session/CSRF gate.
 export function createSystemRoutes(context) {
   const {
-    store, metrics, requestAudit, auditEvent, statePayload, runtimeInfo,
+    store, metrics, requestAudit, audit, auditEvent, serviceStatus, statePayload, runtimeInfo,
     currentAdminPort, routerPort, configWarnings, incomingConfig,
     redactedConfig, restartRequired, projectRoot, backupDir, auth, acquireLogin,
   } = context;
@@ -20,19 +20,19 @@ export function createSystemRoutes(context) {
   async function handle(req, res, url, parts) {
     const method = req.method;
     if (parts.length === 2) {
-      if (parts[1] === 'state' && method === 'GET') { sendJson(res, 200, await statePayload()); return; }
-      if (parts[1] === 'stats' && method === 'GET') { sendJson(res, 200, { ok: true, now: Date.now(), configRevision: store.revision, stats: metrics.snapshot() }); return; }
+      if (parts[1] === 'state' && method === 'GET') { sendJson(res, 200, await statePayload()); return true; }
+      if (parts[1] === 'stats' && method === 'GET') { sendJson(res, 200, { ok: true, now: Date.now(), configRevision: store.revision, stats: metrics.snapshot() }); return true; }
       if (parts[1] === 'requests' && method === 'GET') {
         const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 50));
         sendJson(res, 200, { ok: true, requests: metrics.snapshot().recent.slice(0, limit) });
         return true;
       }
-      if (parts[1] === 'audit' && method === 'GET') { sendJson(res, 200, { ok: true, audit: audit.slice(0, 200) }); return; }
+      if (parts[1] === 'audit' && method === 'GET') { sendJson(res, 200, { ok: true, audit: audit.slice(0, 200) }); return true; }
       if (parts[1] === 'request-audit' && method === 'GET') {
         sendJson(res, 200, { ok: true, ...requestAudit.snapshot(url.searchParams.has('ip') ? { ip: url.searchParams.get('ip') } : {}) });
         return true;
       }
-      if (parts[1] === 'backups' && method === 'GET') { sendJson(res, 200, { ok: true, backups: await store.listBackups() }); return; }
+      if (parts[1] === 'backups' && method === 'GET') { sendJson(res, 200, { ok: true, backups: await store.listBackups() }); return true; }
       if (parts[1] === 'settings' && method === 'GET') {
         const snapshot = await store.read();
         sendJson(res, 200, { ok: true, settings: sanitizeSettings(snapshot.raw, snapshot.compiled, runtimeInfo()), summary: snapshot.summary });
@@ -127,7 +127,7 @@ export function createSystemRoutes(context) {
         const importedRouterPort = Number.isInteger(config.port) ? config.port : 8787;
         if (importedAdminPort === importedRouterPort) throw httpError(400, '导入配置的路由端口与管理台端口不能相同');
         const warnings = configWarnings(config, validated.compiled);
-        if (body.dryRun === true) { sendJson(res, 200, { ok: true, dryRun: true, summary: validated.summary, warnings }); return; }
+        if (body.dryRun === true) { sendJson(res, 200, { ok: true, dryRun: true, summary: validated.summary, warnings }); return true; }
         const result = await store.replace(config, { label: 'import' });
         auditEvent('config.import', 'config/local.json', true);
         const restart = restartRequired(result.before, result, Number.isInteger(result.before.raw.adminPort) ? result.before.raw.adminPort : currentAdminPort(), Number.isInteger(result.raw.adminPort) ? result.raw.adminPort : currentAdminPort());
@@ -220,7 +220,7 @@ export function createSystemRoutes(context) {
         sendJson(res, 200, { ok: true, backups: await store.listBackups() });
         return true;
       }
-      if (parts.length === 2 && method === 'GET') { sendJson(res, 200, { ok: true, backups: await store.listBackups() }); return; }
+      if (parts.length === 2 && method === 'GET') { sendJson(res, 200, { ok: true, backups: await store.listBackups() }); return true; }
     }
 
     if (parts[1] === 'service' && parts[2] === 'restart' && method === 'POST' && parts.length === 3) {

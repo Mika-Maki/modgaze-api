@@ -2,32 +2,36 @@
 # Modgaze Cloudflare Tunnel (token mode). API 8787 only.
 # Usage: cf/tunnel.sh start|stop|restart|status
 set -eu
+umask 077
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+secure() { node "$ROOT/scripts/secure-launch.mjs" "$@"; }
 BIN=${BIN:-cloudflared}
 TOKEN_FILE=${TOKEN_FILE:-/etc/cloudflared/token}
 LOG=${LOG:-/var/log/cloudflared-modgaze.log}
 PIDFILE=${PIDFILE:-/run/cloudflared-modgaze.pid}
 
+secure check "$LOG" "$PIDFILE"
+
 running() {
-  [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+  pid=$(secure pid "$PIDFILE") || return 1
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
 case "${1:-}" in
   start)
-    if running; then echo "already running pid=$(cat "$PIDFILE")"; exit 0; fi
+    if running; then echo "already running pid=$(secure pid "$PIDFILE")"; exit 0; fi
     [ -r "$TOKEN_FILE" ] || { echo "missing $TOKEN_FILE" >&2; exit 1; }
-    mkdir -p "$(dirname "$LOG")"
-    setsid sh -c "while :; do $BIN tunnel run --token-file $TOKEN_FILE >> $LOG 2>&1; sleep 5; done" >/dev/null 2>&1 &
-    echo $! > "$PIDFILE"
-    echo "started pid=$(cat "$PIDFILE")"
+    secure launch "$LOG" "$PIDFILE" loop "$BIN" tunnel run --token-file "$TOKEN_FILE"
+    echo "started pid=$(secure pid "$PIDFILE")"
     ;;
   stop)
     if running; then
-      PGID=$(cat "$PIDFILE")
+      PGID=$(secure pid "$PIDFILE")
       kill -TERM -- "-$PGID" 2>/dev/null || kill -TERM "$PGID" 2>/dev/null || true
-      rm -f "$PIDFILE"
+      secure remove "$PIDFILE"
       echo stopped
     else
-      rm -f "$PIDFILE"
+      secure remove "$PIDFILE"
       echo "not running"
     fi
     ;;
@@ -36,7 +40,7 @@ case "${1:-}" in
     "$0" start
     ;;
   status)
-    if running; then echo "running pid=$(cat "$PIDFILE")"; else echo stopped; exit 1; fi
+    if running; then echo "running pid=$(secure pid "$PIDFILE")"; else echo stopped; exit 1; fi
     ;;
   *)
     echo "usage: $0 start|stop|restart|status" >&2

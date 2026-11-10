@@ -59,31 +59,64 @@ export async function createAdmin(options = {}) {
   const requestAudit = options.requestAudit ?? createRequestAudit();
   const auth = new AdminAuth(authPath);
   const limiter = createRequestLimiter();
-  let rateLimits;
-  let rateLimitsSignature;
-  const store = options.store ?? new ConfigStore({ configPath, backupDir, reload: async resolved => {
-    await reload(resolved);
-    rateLimits = normalizeRateLimits(resolved.rateLimits);
-  } });
-  const readStore = store.read.bind(store);
-  store.read = async () => {
-    const snapshot = await readStore();
-    const signature = JSON.stringify(snapshot.compiled.rateLimits);
-    if (rateLimitsSignature !== undefined && signature !== rateLimitsSignature) {
-      rateLimits = normalizeRateLimits(snapshot.compiled.rateLimits);
-    }
-    rateLimitsSignature = signature;
-    return snapshot;
-  };
+  const rateLimitsRefreshMs = options.rateLimitsRefreshMs ?? 5000;
+  if (!Number.isSafeInteger(rateLimitsRefreshMs) || rateLimitsRefreshMs < 1 || rateLimitsRefreshMs > 2147483647) throw new Error('Invalid rateLimitsRefreshMs');
+  const store = options.store ?? new ConfigStore({ configPath, backupDir, reload });
   const initialSnapshot = await store.read();
   requestAudit.configure(initialSnapshot.compiled.audit);
-  rateLimits = normalizeRateLimits(options.rateLimits ?? initialSnapshot.compiled.rateLimits);
-  let refreshingLimits;
+  let rateLimits = normalizeRateLimits(options.rateLimits ?? initialSnapshot.compiled.rateLimits);
+  let rateLimitsSignature = JSON.stringify(initialSnapshot.compiled.rateLimits);
+  let limitsGeneration = 0;
+  let reloadingLimits = 0;
+  let limitsClosed = false;
+  let limitsTimer;
+  const reloadStore = (store.reload ?? reload).bind(store);
+  store.reload = async resolved => {
+    // Invalidate pending reads both before and after a reload (including rollback).
+    ++limitsGeneration;
+    ++reloadingLimits;
+    try {
+      await reloadStore(resolved);
+      if (!limitsClosed) {
+        rateLimits = normalizeRateLimits(resolved.rateLimits);
+        rateLimitsSignature = JSON.stringify(rateLimits);
+      }
+    } finally {
+      --reloadingLimits;
+      ++limitsGeneration;
+    }
+  };
+  function scheduleLimitsRefresh() {
+    if (limitsClosed) return;
+    limitsTimer = setTimeout(refreshRateLimits, rateLimitsRefreshMs);
+    limitsTimer.unref();
+  }
   async function refreshRateLimits() {
-    // Read before admission, even when an earlier low limit denies all requests.
-    // A local config correction therefore recovers without a UI request or restart.
-    refreshingLimits ??= store.read().catch(() => null).finally(() => { refreshingLimits = undefined; });
-    await refreshingLimits;
+    // Independent of admission: local corrections recover even a fully exhausted
+    // budget, while 401/429 floods cannot trigger config reads or compilation.
+    const refresh = async () => {
+      if (limitsClosed || reloadingLimits) return;
+      const generation = limitsGeneration;
+      const snapshot = await store.read();
+      if (limitsClosed || reloadingLimits || generation !== limitsGeneration) return;
+      const signature = JSON.stringify(snapshot.compiled.rateLimits);
+      if (signature !== rateLimitsSignature) {
+        rateLimits = normalizeRateLimits(snapshot.compiled.rateLimits);
+        rateLimitsSignature = signature;
+      }
+    };
+    try {
+      // Serialize with ConfigStore writes so uncommitted settings never leak into
+      // admission. The next timeout is armed only after this read settles.
+      if (store.enqueue) await store.enqueue(refresh);
+      else await refresh();
+    } catch { /* Keep last-known-good limits and retry after local config repair. */ }
+    finally { scheduleLimitsRefresh(); }
+  }
+  function stopLimitsRefresh() {
+    limitsClosed = true;
+    ++limitsGeneration;
+    clearTimeout(limitsTimer);
   }
   const peerFor = req => String(req.socket.remoteAddress ?? 'unknown').replace(/^::ffff:/i, '');
   function acquireLogin(req) {
@@ -366,7 +399,7 @@ export async function createAdmin(options = {}) {
   }
 
   const system = createSystemRoutes({
-    store, metrics, requestAudit, auditEvent, statePayload, runtimeInfo,
+    store, metrics, requestAudit, audit, auditEvent, serviceStatus, statePayload, runtimeInfo,
     currentAdminPort, routerPort, configWarnings, incomingConfig,
     redactedConfig, restartRequired, projectRoot, backupDir, auth, acquireLogin,
   });
@@ -491,7 +524,6 @@ export async function createAdmin(options = {}) {
         return;
       }
       if (url.pathname === '/healthz') { sendJson(res, 200, { status: 'ok', service: 'admin' }); return; }
-      await refreshRateLimits();
       if (res.destroyed || res.writableEnded) return;
       const limits = rateLimits.admin;
       const release = limiter.acquire([
@@ -530,10 +562,17 @@ export async function createAdmin(options = {}) {
   server.on('error', error => { console.error(JSON.stringify({ event: 'admin_listen_error', code: error.code ?? 'UNKNOWN' })); });
   const prune = setInterval(() => sessions.prune(), 10 * 60 * 1000);
   prune.unref?.();
-  server.on('close', () => clearInterval(prune));
+  const closeServer = server.close;
+  server.close = function (...args) {
+    stopLimitsRefresh();
+    clearInterval(prune);
+    return closeServer.apply(this, args);
+  };
+  server.on('close', () => { stopLimitsRefresh(); clearInterval(prune); });
   server.adminAuthPath = authPath;
   server.adminBackupDir = backupDir;
   server.adminMetrics = metrics;
   await authState();
+  scheduleLimitsRefresh();
   return server;
 }

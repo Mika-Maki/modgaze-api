@@ -6,7 +6,8 @@
 #   TUNNEL_TOKEN_FILE 默认 /etc/cloudflared/token
 #   TUNNEL_HOST      公网域名，例如 api.example.com
 #   TUNNEL_HOST_FILE 域名文件；默认优先 cf/tunnel.host.private（不提交）
-set -u
+set -uo pipefail
+umask 077
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
 RUN="$ROOT/run"
@@ -19,14 +20,21 @@ HOST_FILE="${TUNNEL_HOST_FILE:-$ROOT/cf/tunnel.host.private}"
 if [ -z "${TUNNEL_HOST_FILE:-}" ] && [ ! -f "$HOST_FILE" ]; then
   HOST_FILE="$ROOT/cf/tunnel.host"
 fi
-mkdir -p "$RUN"
+secure() { node "$ROOT/scripts/secure-launch.mjs" "$@"; }
+# url only reads host configuration; it does not need or touch runtime files.
+case "${1:-}" in
+  start|stop|restart|status)
+    secure directory "$RUN" || exit 1
+    secure check "$MODGAZE_LOG" "$TUNNEL_LOG" "$MODGAZE_PID" "$TUNNEL_PID" || exit 1
+    ;;
+esac
 
 host() {
   if [ -n "${TUNNEL_HOST:-}" ]; then printf '%s\n' "$TUNNEL_HOST"; return; fi
   [ -f "$HOST_FILE" ] && head -n1 "$HOST_FILE" || true
 }
 health() { curl -fsS -m 2 http://127.0.0.1:8787/healthz >/dev/null 2>&1; }
-alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+alive() { local pid; pid=$(secure pid "$1") || return 1; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
 
 pick_config() {
   if [ -n "${MODGAZE_CONFIG:-}" ]; then printf '%s\n' "$MODGAZE_CONFIG"; return; fi
@@ -38,32 +46,30 @@ start_modgaze() {
   if health; then echo "modgaze: already up"; return 0; fi
   local cfg; cfg=$(pick_config)
   [ -f "$cfg" ] || { echo "modgaze: config not found: $cfg" >&2; return 1; }
-  setsid node "$ROOT/src/server.mjs" --config "$cfg" >>"$MODGAZE_LOG" 2>&1 &
-  echo $! >"$MODGAZE_PID"
+  secure launch "$MODGAZE_LOG" "$MODGAZE_PID" once node "$ROOT/src/server.mjs" --config "$cfg" || return 1
   local i
   for i in $(seq 1 80); do
     if health; then echo "modgaze: up (config=$cfg)"; return 0; fi
     sleep 0.25
   done
   echo "modgaze: failed to start; see $MODGAZE_LOG" >&2
-  tail -n 5 "$MODGAZE_LOG" >&2 2>/dev/null || true
+  secure read "$MODGAZE_LOG" | tail -n 5 >&2 || true
   return 1
 }
 
 start_tunnel() {
-  if alive "$TUNNEL_PID"; then echo "tunnel: already running pid=$(cat "$TUNNEL_PID")"; return 0; fi
+  if alive "$TUNNEL_PID"; then echo "tunnel: already running pid=$(secure pid "$TUNNEL_PID")"; return 0; fi
   [ -r "$TOKEN_FILE" ] || { echo "tunnel: missing token $TOKEN_FILE" >&2; return 1; }
   if ! grep -q 'argotunnel' /etc/hosts 2>/dev/null; then
     echo "warn: /etc/hosts 没有 argotunnel edge 覆盖，Clash fake-ip 可能让隧道注册失败" >&2
   fi
   local start_line=0
-  [ -f "$TUNNEL_LOG" ] && start_line=$(wc -l <"$TUNNEL_LOG")
-  setsid bash -c "while :; do cloudflared tunnel run --token-file '$TOKEN_FILE' >>'$TUNNEL_LOG' 2>&1; sleep 5; done" >/dev/null 2>&1 &
-  echo $! >"$TUNNEL_PID"
+  start_line=$(secure read "$TUNNEL_LOG" | wc -l) || return 1
+  secure launch "$TUNNEL_LOG" "$TUNNEL_PID" loop cloudflared tunnel run --token-file "$TOKEN_FILE" || return 1
   local i
   for i in $(seq 1 120); do
-    if tail -n +"$((start_line + 1))" "$TUNNEL_LOG" 2>/dev/null | grep -q 'Registered tunnel connection'; then
-      echo "tunnel: registered pid=$(cat "$TUNNEL_PID")"
+    if secure read "$TUNNEL_LOG" | tail -n +"$((start_line + 1))" | grep -q 'Registered tunnel connection'; then
+      echo "tunnel: registered pid=$(secure pid "$TUNNEL_PID")"
       return 0
     fi
     sleep 0.25
@@ -75,22 +81,22 @@ start_tunnel() {
 stop_one() {
   local pidfile=$1 name=$2
   if alive "$pidfile"; then
-    local pgid; pgid=$(cat "$pidfile")
+    local pgid; pgid=$(secure pid "$pidfile")
     kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pgid" 2>/dev/null || true
-    rm -f "$pidfile"
+    secure remove "$pidfile" || return 1
     echo "$name: stopped"
   else
-    rm -f "$pidfile"
+    secure remove "$pidfile" || return 1
     echo "$name: not running"
   fi
 }
 
 status() {
   if health; then echo "modgaze: up"; else echo "modgaze: down"; fi
-  if alive "$TUNNEL_PID"; then echo "tunnel: running pid=$(cat "$TUNNEL_PID")"; else echo "tunnel: down"; fi
+  if alive "$TUNNEL_PID"; then echo "tunnel: running pid=$(secure pid "$TUNNEL_PID")"; else echo "tunnel: down"; fi
   local h; h=$(host)
   [ -n "$h" ] && echo "url: https://$h"
-  tail -n 3 "$TUNNEL_LOG" 2>/dev/null | sed 's/^/  /' || true
+  secure read "$TUNNEL_LOG" | tail -n 3 | sed 's/^/  /' || true
 }
 
 case "${1:-}" in

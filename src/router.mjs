@@ -7,6 +7,7 @@ import { createResponseScope, createResponseObserver } from './response-scope.mj
 import { createGunzip, createBrotliDecompress, createUnzip } from 'node:zlib';
 import { secretRedactor } from './secrets.mjs';
 import { normalizeMRExpiresAt } from './key-expiry.mjs';
+import { validateResourceReferences, rejectResourceQuery } from './resource-policy.mjs';
 import { normalizeAuditConfig, resolveAuditIp, createAuditObserver, extractSystemPrompt, createRequestAudit } from './request-audit.mjs';
 
 export const PROTOCOLS = ['chat', 'responses', 'messages'];
@@ -226,6 +227,7 @@ function capOutputTokens(parsed, model, protocol, path) {
 }
 
 function validateReferences(parsed, protocol, allowPrevious, checkPrevious) {
+  validateResourceReferences(parsed, protocol);
   // Only protocol-level fields carry object authority. Tool schemas, metadata,
   // and user JSON with similarly named properties are ordinary opaque data.
   for (const [name, value] of Object.entries(parsed)) {
@@ -236,15 +238,6 @@ function validateReferences(parsed, protocol, allowPrevious, checkPrevious) {
       checkPrevious(value);
     }
     if (normalized === 'responseid' && value !== null) throw fail(400, 'Untracked response references are not supported');
-  }
-  if (protocol !== 'responses') return;
-  const pending = [parsed.input];
-  while (pending.length) {
-    const value = pending.pop();
-    if (Array.isArray(value)) { for (const child of value) pending.push(child); continue; }
-    if (!object(value)) continue;
-    if (value.type === 'item_reference') throw fail(400, 'Untracked item references are not supported');
-    for (const child of Object.values(value)) if (object(child) || Array.isArray(child)) pending.push(child);
   }
 }
 
@@ -400,6 +393,7 @@ export function createRouter(input, { logger = () => {}, onRequest, onAudit } = 
       if (terminal || res.destroyed || req.aborted) { release(); return; }
       if (FORBIDDEN.some(k => url.searchParams.has(k))) throw fail(400, 'Upstream routing parameters are not accepted');
       for (const name of url.searchParams.keys()) {
+        rejectResourceQuery(name);
         const normalized = name.toLowerCase().replace(/[^a-z0-9]/g, '');
         if (/previousresponse|conversation|responseid/.test(normalized)) throw fail(400, 'Object references are not accepted in query parameters');
       }

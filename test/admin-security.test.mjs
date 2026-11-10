@@ -25,6 +25,15 @@ async function fixture(t, { limits, optionLimits, configure, publicDir, reload }
   if (configure) configure(config);
   await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
   await new AdminAuth(authPath).setPassword(PASSWORD);
+  let refreshLimits;
+  const originalTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+    if (callback.name === 'refreshRateLimits') {
+      refreshLimits = callback;
+      return { unref() {} };
+    }
+    return originalTimeout(callback, ms, ...args);
+  });
   const admin = await createAdmin({ configPath, authPath, adminPort: 0, runDir: join(dir, 'run'), ...(publicDir ? { publicDir } : {}), ...(optionLimits ? { rateLimits: optionLimits } : {}), reload });
   await new Promise(resolve => admin.listen(0, '127.0.0.1', resolve));
   const listeners = [admin];
@@ -49,7 +58,7 @@ async function fixture(t, { limits, optionLimits, configure, publicDir, reload }
     cookie = result.headers['set-cookie'][0].split(';')[0]; csrf = result.json.csrfToken;
     return result;
   }
-  return { dir, configPath, authPath, config, admin, listeners, request, login };
+  return { dir, configPath, authPath, config, admin, listeners, request, login, refreshLimits: () => refreshLimits() };
 }
 
 function assertLimited(response) {
@@ -136,12 +145,15 @@ test('low settings save succeeds, local edit recovers admission, and counters su
   const raw = JSON.parse(await readFile(f.configPath, 'utf8'));
   raw.rateLimits.admin.rpm = 100;
   await writeFile(f.configPath, JSON.stringify(raw));
+  await f.refreshLimits();
   assert.equal((await f.request('/api/settings')).status, 200);
   raw.rateLimits.admin.rpm = 1;
   await writeFile(f.configPath, JSON.stringify(raw));
+  await f.refreshLimits();
   assertLimited(await f.request('/api/settings'));
   raw.rateLimits.admin.rpm = 0;
   await writeFile(f.configPath, JSON.stringify(raw));
+  await f.refreshLimits();
   assert.equal((await f.request('/api/settings')).status, 200);
 });
 
@@ -244,6 +256,7 @@ test('initial options stay active until reload, and reload preserves request cou
   const raw = JSON.parse(await readFile(f.configPath, 'utf8'));
   raw.rateLimits.admin.perIpRpm = 2;
   await writeFile(f.configPath, JSON.stringify(raw));
+  await f.refreshLimits();
   assertLimited(await f.request('/api/auth/status'));
 });
 
@@ -260,6 +273,8 @@ test('config import and backup restore hot-update limits without resetting live 
   raw.rateLimits.admin.rpm = 0;
   raw.rateLimits.admin.perIpRpm = 1;
   await writeFile(f.configPath, JSON.stringify(raw));
+  // Run the independent timer without spending any peer's request budget.
+  await f.refreshLimits();
   const restored = await f.request('/api/backups/' + encodeURIComponent(backup.json.name) + '/restore', { method: 'POST', body: {}, peer: '127.0.0.2' });
   assert.equal(restored.status, 200, restored.text);
   assert.equal((await f.request('/api/auth/status', { peer: '127.0.0.2' })).status, 200, 'restore reinstates default per-source budget');

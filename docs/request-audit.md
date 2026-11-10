@@ -65,3 +65,24 @@
 - 每个 JSON 响应 / SSE 事件最多解析 1 MiB；超过时跳过该响应/事件的 usage 提取，原始代理数据仍按已有响应上限转发，不伪造 Token。SSE 不强制改写 `stream_options.include_usage`；需要完整 Chat 流式用量时由客户端/上游启用 usage。
 
 配置由 WebUI 保存后无需重启；首次升级到包含此功能的代码仍需重启正在运行的旧进程。
+
+## 日志保留与轮转
+
+`maxEntries`不限制stdout文件的大小或保留期。启动脚本保证项目run目录0700、日志0600；收集器与归档也必须保持等价权限。默认不要启用System Prompt，关闭字段不会删除已写出的历史日志。
+
+如使用Linux logrotate，可为实际安装路径配置下面的独立规则（示例安装路径为 `/opt/modgaze`，部署时替换，不是当前实例路径；本项目不会自动安装系统规则）：
+
+```conf
+/opt/modgaze/run/modgaze.log /opt/modgaze/run/modgaze-tunnelup.log /opt/modgaze/run/cloudflared-tunnelup.log {
+    daily
+    maxsize 50M
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}
+```
+
+以服务账户或root执行轮转，保留私有归档权限，并将规则按业务量加入足够频繁的调度；`maxsize`仅在轮转任务执行时检查，不是写入硬上限。`copytruncate`避免重启长连接，但复制与截断之间可能丢失少量日志；要求无损审计时应将stdout交给支持安全轮转的日志收集器，而非copytruncate。为磁盘剩余空间、日志增长速度及日志/归档权限漂移设置告警。未自动修改线上日志、安装规则或删除历史记录。

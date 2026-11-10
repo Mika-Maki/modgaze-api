@@ -39,7 +39,7 @@
 
 错误登录不再触发所有来源共用的指数锁定；KDF先取得并发槽，完成后再释放，客户端断开不会提前释放仍在工作的KDF。WebUI轮询遇429按Retry-After退避，不自动重试写操作。
 
-如果把管理限额设得太低，可在本地直接修改**运行时实际使用的配置文件**（本机为config/locall.json），保留0600权限；管理会重新读取限额以恢复，勿误改config/local.json。
+如果把管理限额设得太低，可在本地直接修改**运行时实际使用的配置文件**（以启动参数或环境配置为准），保留0600权限。管理限额由独立默认5秒周期刷新，错误/读取失败保留最后一次有效限额；请求自身不再触发全量配置读取和编译，429也不会触发刷新。WebUI保存仍立即生效。恢复通常在下个刷新周期完成，而非要求先有一条被准入请求。
 
 ## 本机控制台与 Tunnel 判定
 
@@ -76,3 +76,19 @@ node src/server.mjs --config config/locall.json --check
 ```
 
 新增回归覆盖组隔离、同组多key共享、0无限、滚动窗、热更新、SSE取消释放、HTTP/TLS管理共用预算、登录来源隔离、30静态模块突发、对象授权、解压限制和脱敏。所有上游测试使用本机临时mock，不产生供应商费用。
+
+## 资源引用默认拒绝
+
+网关没有文件、向量库、容器或保存Prompt的所有权账本，因此不能把“知道ID”视为授权。以下协议语义槽在调用上游前返回403，错误类型为 `resource_reference_error`：Responses input_file/input_image 的file_id、Chat文件与音频ID、Anthropic文件source与container_upload、file_search的vector_store_ids、已有code_interpreter容器及auto容器file_ids、顶层容器和保存的prompt.id。相应query引用也拒绝；模型defaults合并后执行相同检查。此规则同时适用于直通Key和虚拟Key，没有共享凭据旁路开关。
+
+内联file_data、base64媒体、文本、工具schema、function参数和metadata继续透传，不扫描普通用户JSON中的同名字段。Code Interpreter可使用显式 `{ "container": { "type": "auto" } }`，但不能指定已有容器或挂载未授权文件。已有Responses所有权检查不变。
+
+兼容变化：此前使用供应商已上传资源ID的客户端现在会收到403，即使是同一个用户。需要该功能时应实现按调用Key且绑定上游项目/凭据的资源授权账本；不要移除检查后复用共享凭据。此修复不是通用第三方扩展协议验证器，新增资源型能力必须先实现授权。
+
+监控：开启accessLog后，可按 `status=403 && outcome=resource_reference_error` 告警；request_id用于关联。默认不输出对象ID、正文、Key或其指纹，避免为了监控引入额外敏感信息。测试断言拒绝发生时上游调用数为0、日志不含提交的ID或密钥。
+
+## 部署日志与脚本加固
+
+启动入口使用私有umask，项目专属run目录收紧至0700，日志收紧至0600（包括旧文件）。拒绝不安全文件类型/符号链接/非本用户文件，再通过已校验文件描述符交给子进程；不收紧/run、/var/log等系统共享目录。路径和环境参数不再插值为shell程序，带空格和引号的值仍作为单个参数处理。
+
+这些权限变更在使用新启动脚本时生效，不会自动修改正在运行的旧服务或既有线上日志。审计仍按显式开关写stdout；maxEntries仅限制内存。日志轮转与保留期见[请求审计文档](request-audit.md#日志保留与轮转)。
