@@ -7,6 +7,15 @@ const MASK = '[REDACTED]';
 // this is not a guarantee against arbitrary upstream encodings or encryption.
 function compile(values, bytes) {
   const nodes = [{ edges: new Map(), terminal: false }];
+  // Share logical credential prefixes, while keeping raw/JSON spellings and
+  // whole-key URI spellings in separate tries. Joining those two languages
+  // would incorrectly accept a mixture of partial URI and JSON encodings.
+  const rawChildren = new Map(), uriChildren = new Map();
+  function children(index, from) {
+    let result = index.get(from);
+    if (!result) index.set(from, result = new Map());
+    return result;
+  }
   const node = () => { nodes.push({ edges: new Map(), terminal: false }); return nodes.length - 1; };
   const units = value => bytes ? [...Buffer.from(value)] : value.split('').map(c => c.charCodeAt(0));
   function edge(from, unit, to) {
@@ -28,7 +37,10 @@ function compile(values, bytes) {
   for (const value of values) {
     let from = 0;
     for (const char of value) {
+      const shared = children(rawChildren, from);
+      if (shared.has(char)) { from = shared.get(char); continue; }
       const to = node();
+      shared.set(char, to);
       const loneSurrogate = char.length === 1 && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdfff;
       const spellings = new Set([JSON.stringify(char).slice(1, -1)]);
       if (!bytes || !loneSurrogate) spellings.add(char);
@@ -43,18 +55,23 @@ function compile(values, bytes) {
     // Lone surrogates have no encodeURIComponent representation.
     try {
       const encoded = encodeURIComponent(value);
-      const to = node();
+      if (encoded === value) continue; // Already covered by the raw spelling.
       let at = 0, state = 0;
       while (at < encoded.length) {
         const percent = encoded[at] === '%';
         const spelling = encoded.slice(at, at + (percent ? 3 : 1));
-        const next = at + spelling.length === encoded.length ? to : node();
+        const token = percent ? spelling.toLowerCase() : spelling;
+        const shared = children(uriChildren, state);
+        let next = shared.get(token);
         // encodeURIComponent produces uppercase hex; normalize just percent bytes.
-        path(state, next, percent ? spelling.toLowerCase() : spelling, percent);
+        if (next === undefined) {
+          next = node(); shared.set(token, next);
+          path(state, next, token, percent);
+        }
         state = next;
         at += spelling.length;
       }
-      nodes[to].terminal = true;
+      nodes[state].terminal = true;
     } catch (error) {
       if (!(error instanceof URIError)) throw error;
     }

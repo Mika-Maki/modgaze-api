@@ -14,3 +14,13 @@ export function normalizeMRExpiresAt(value) {
   if (!valid || !Number.isFinite(time)) throw new Error('Invalid MR Expires at: invalid calendar date');
   return new Date(time).toISOString();
 }
+
+// Evaluate at creation inside the configuration queue, not when the HTTP body
+// first arrives: a queued request may outlive its proposed expiry.
+export function normalizeNewMRExpiresAt(value, now = Date.now()) {
+  const expiresAt = normalizeMRExpiresAt(value);
+  if (expiresAt !== null && Date.parse(expiresAt) <= now) {
+    throw new Error('Invalid MR Expires at: new keys require a future expiry');
+  }
+  return expiresAt;
+}

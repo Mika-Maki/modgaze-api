@@ -6,7 +6,7 @@
   "type": "module",
   "description": "Modgaze — key-scoped local OpenAI/Anthropic router with an abyssal control-plane WebUI",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node src/server.mjs",

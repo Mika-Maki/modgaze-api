@@ -54,6 +54,19 @@ function nextGroupId() {
   while (used.has('group-' + String(index).padStart(3, '0'))) index += 1;
   return 'group-' + String(index).padStart(3, '0');
 }
+function keyExpiryField(key = {}) {
+  const date = key.expiresAt ? new Date(key.expiresAt) : null;
+  const pad = number => String(number).padStart(2, '0');
+  const localValue = date && !Number.isNaN(date.getTime())
+    ? String(date.getFullYear()).padStart(4, '0') + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
+    : '';
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return '<div class="field"><label for="key-expires-at">MR Expires at</label><input class="input" id="key-expires-at" type="datetime-local" name="expiresAt" step="1" value="' + esc(localValue) + '" data-original-local="' + esc(localValue) + '" data-original-expires-at="' + esc(key.expiresAt || '') + '"><span class="field-hint">留空表示永不过期，到期后自动删除此 MR Key。浏览器本地时区：' + esc(timezone) + '；保存时转换为 UTC。</span></div>';
+}
+function keyTokenLimitFields(limits = {}) {
+  const labels = { totalTokens: 'Total Token 总额度', inputTokens: 'In Token 输入额度', outputTokens: 'Out Token 输出额度', cachedTokens: 'Cached Token 缓存额度', dayTokens: 'Day Token 每日额度' };
+  return '<fieldset class="form-grid" style="border:0;padding:0;margin:0"><legend class="field-hint" style="padding:0 0 10px">MR Key Token 限额 · 留空或 0 表示不限；每日按服务器本地时区重置。Cached 已含在 In 中。</legend>' + Object.entries(labels).map(([name, label]) => '<div class="field"><label for="key-limit-' + name + '">' + label + '</label><input class="input" id="key-limit-' + name + '" name="tokenLimit_' + name + '" type="number" min="0" max="9007199254740991" step="1" value="' + esc(limits[name] || '') + '" placeholder="不限"></div>').join('') + '</fieldset>';
+}
 function openCreateGroupModal() {
   const id = nextGroupId();
   const protocols = PROTOCOLS.map(function (protocol) { return '<label class="checkbox-row"><input type="checkbox" name="protocols" value="' + protocol + '" ' + (protocol === 'chat' ? 'checked' : '') + '> ' + PROTOCOL_LABEL[protocol] + ' <span class="faint">' + (protocol === 'chat' ? '/v1/chat/completions' : protocol === 'responses' ? '/v1/responses' : '/v1/messages') + '</span></label>'; }).join('');
@@ -71,6 +84,8 @@ function openCreateGroupModal() {
       '<div class="field span-2"><label>分组限流</label><span class="field-hint">默认 0 = 无上限；同组所有 Key 共享预算，RPM 按每 60 秒计数，并发包含 SSE 全生命周期。保存后热生效。</span></div>' +
       groupRateLimitFields({}, 'create-group-limits') +
       '<div class="field span-2"><label>虚拟 Key 标签</label><input class="input" name="label" placeholder="默认密钥（留空使用默认标签）"><span class="field-hint">会自动生成一个 mr- 开头的虚拟 Key，保存后立即显示。</span></div>' +
+      '<div class="span-2">' + keyExpiryField() + '</div>' +
+      '<div class="span-2">' + keyTokenLimitFields() + '</div>' +
       '<div class="form-error span-2" role="alert"></div>' +
       '<div class="form-actions span-2"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('check') + ' 创建分组</button></div></form>',
   });
@@ -160,6 +175,8 @@ function openVirtualKeyModal(groupId) {
       '<div class="field"><label>归属分组</label><select class="select" name="group">' + groupSelectOptions(groupId || app.data?.groups?.[0]?.id) + '</select></div>' +
       '<div class="field"><label>标签</label><input class="input" name="label" maxlength="80" placeholder="例如：Claude Code 客户端"></div>' +
       '<div class="field"><label>自定义 Key（可选）</label><input class="input" name="key" autocomplete="off" placeholder="留空自动生成 mr-..."><span class="field-hint">自定义 Key 至少 8 个字符，不能包含空白字符。' + (group && !group.upstreamKey ? ' 该分组未配置上游 Key，保存时可能失败。' : '') + '</span></div>' +
+      keyExpiryField() +
+      keyTokenLimitFields() +
       '<div class="form-error" role="alert"></div>' +
       '<div class="form-actions"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('plus') + ' 创建 Key</button></div></form>',
   });
@@ -179,16 +196,7 @@ function openApiKeyModal(groupId) {
 
 function openKeyLabelModal(key, source, groupId) {
   const isVirtual = source === 'virtual';
-  let expiryField = '';
-  if (isVirtual) {
-    const date = key.expiresAt ? new Date(key.expiresAt) : null;
-    const pad = number => String(number).padStart(2, '0');
-    const localValue = date && !Number.isNaN(date.getTime())
-      ? String(date.getFullYear()).padStart(4, '0') + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
-      : '';
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    expiryField = '<div class="field"><label for="key-expires-at">MR Expires at</label><input class="input" id="key-expires-at" type="datetime-local" name="expiresAt" step="1" value="' + esc(localValue) + '" data-original-local="' + esc(localValue) + '" data-original-expires-at="' + esc(key.expiresAt || '') + '"><span class="field-hint">留空表示永不过期，到期后自动删除此 MR Key。浏览器本地时区：' + esc(timezone) + '；保存时转换为 UTC。</span></div>';
-  }
+  const expiryField = isVirtual ? keyExpiryField(key) + keyTokenLimitFields(key.tokenLimits) : '';
   openModal({
     title: isVirtual ? '编辑密钥' : '重命名密钥', subtitle: '标签只用于本地识别，不影响鉴权。', icon: 'edit', size: 'narrow',
     body: '<form class="form-grid" data-form="key-label" data-group="' + esc(groupId) + '" data-source="' + esc(source) + '" data-key-id="' + esc(key.id) + '"><div class="field"><label>标签</label><input class="input" name="label" value="' + esc(key.label || '') + '" maxlength="80" autofocus></div>' + expiryField + '<div class="form-error" role="alert"></div><div class="form-actions"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('check') + ' 保存</button></div></form>',
@@ -198,7 +206,7 @@ function openKeyLabelModal(key, source, groupId) {
 function openCloneModal(group) {
   openModal({
     title: '克隆分组', subtitle: '复制路由与模型，重新生成虚拟 Key；不会复制直通 Key。', icon: 'copy', size: 'narrow',
-    body: '<form class="form-grid" data-form="clone-group" data-group="' + esc(group.id) + '"><div class="field"><label>新分组 ID</label><input class="input" name="id" value="' + esc(group.id + '-copy') + '" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"></div><div class="field"><label>展示名称</label><input class="input" name="name" value="' + esc((group.name || group.id) + ' 副本') + '"></div><div class="info-box">' + icon('key') + '<span>克隆会复用上游 Key 与模型，并为新分组生成新的虚拟 Key，避免和原分组冲突。</span></div><div class="form-error" role="alert"></div><div class="form-actions"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('copy') + ' 克隆</button></div></form>',
+    body: '<form class="form-grid" data-form="clone-group" data-group="' + esc(group.id) + '"><div class="field"><label>新分组 ID</label><input class="input" name="id" value="' + esc(group.id + '-copy') + '" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"></div><div class="field"><label>展示名称</label><input class="input" name="name" value="' + esc((group.name || group.id) + ' 副本') + '"></div>' + keyExpiryField() + keyTokenLimitFields() + '<div class="info-box">' + icon('key') + '<span>克隆会复用上游 Key 与模型，并为新分组生成新的虚拟 Key，避免和原分组冲突。</span></div><div class="form-error" role="alert"></div><div class="form-actions"><button class="btn btn-ghost" type="button" data-action="close-modal">取消</button><button class="btn btn-primary" type="submit">' + icon('copy') + ' 克隆</button></div></form>',
   });
 }
 

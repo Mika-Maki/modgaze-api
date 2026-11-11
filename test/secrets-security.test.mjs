@@ -117,3 +117,21 @@ test('native stream backpressure bounds unread output', async () => {
   assert.ok(redact.readableLength <= redact.readableHighWaterMark + chunk.length);
   redact.destroy();
 });
+
+test('shared prefixes preserve separate URI/JSON languages, case sensitivity and longest matches', async () => {
+  for (const [keys, input, expected] of [
+    [['a/b'], 'a%2Fb a\\u002fb', MASK + ' ' + MASK],
+    [['a/b'], 'a%2F\\u0062', 'a%2F\\u0062'],
+    [['a/b', 'a%c'], 'a%2Fc', 'a%2Fc'],
+    [['/Ab'], '%2fAb %2FAb %2fab', MASK + ' ' + MASK + ' %2fab'],
+    [['\\u00af'], '\\u00AF', '\\u00AF'],
+    [['a', 'ab', 'a/b'], 'ab a%2Fb a%2Fx', MASK + ' ' + MASK + ' ' + MASK + '%2Fx'],
+    [['\ud800', '�', '😀', '😀x'], '\\ud800 😀x', MASK + ' ' + MASK],
+  ]) {
+    for (const ordered of [keys, [...keys].reverse()]) {
+      const redact = secretRedactor(ordered);
+      assert.equal(redact.text(input), expected);
+      await everySplit(redact, input, expected);
+    }
+  }
+});

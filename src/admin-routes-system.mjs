@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
+import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
-import { assertLabel, friendlyError, httpError, sanitizeSettings } from './admin-store.mjs';
+import { createHash } from 'node:crypto';
+import { assertLabel, findKeyEntry, friendlyError, groupById, httpError, resolvedGroupById, sanitizeSettings } from './admin-store.mjs';
 import { readJson, sendJson, sendText } from './admin-http.mjs';
 import { readBackup as readBackupFile, validateConfig } from './config.mjs';
 import { normalizeAuditConfig } from './request-audit.mjs';
 import { normalizeRateLimits } from './rate-limit.mjs';
+import { normalizeTokenLimits } from './token-usage.mjs';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -12,7 +15,7 @@ const isObject = value => value !== null && typeof value === 'object' && !Array.
 // Read-only dashboards and mutating system actions share the same session/CSRF gate.
 export function createSystemRoutes(context) {
   const {
-    store, metrics, requestAudit, audit, auditEvent, serviceStatus, statePayload, runtimeInfo,
+    store, metrics, requestAudit, tokenUsageStore, audit, auditEvent, serviceStatus, statePayload, runtimeInfo,
     currentAdminPort, routerPort, configWarnings, incomingConfig,
     redactedConfig, restartRequired, projectRoot, backupDir, auth, acquireLogin,
   } = context;
@@ -22,6 +25,23 @@ export function createSystemRoutes(context) {
     if (parts.length === 2) {
       if (parts[1] === 'state' && method === 'GET') { sendJson(res, 200, await statePayload()); return true; }
       if (parts[1] === 'stats' && method === 'GET') { sendJson(res, 200, { ok: true, now: Date.now(), configRevision: store.revision, stats: metrics.snapshot() }); return true; }
+      if (parts[1] === 'token-usage' && method === 'GET') {
+        if (!tokenUsageStore) throw httpError(503, 'Token 统计暂不可用');
+        let keyId, tokenLimits;
+        if (url.searchParams.has('keyId') || url.searchParams.has('group')) {
+          const id = url.searchParams.get('group'), shortId = url.searchParams.get('keyId');
+          if (!id || !shortId) throw httpError(400, '查询 Key 用量需要 group 和 keyId');
+          const snapshot = await store.readVersioned();
+          const group = groupById(snapshot.raw, id);
+          const found = findKeyEntry(group, resolvedGroupById(snapshot.resolved, id) ?? group, 'virtualApiKeys', shortId);
+          const meta = group.virtualKeyMeta?.[shortId];
+          keyId = meta?.tokenUsageId ?? createHash('sha256').update(found.resolved).digest('hex');
+          tokenLimits = normalizeTokenLimits(meta?.tokenLimits);
+        }
+        const usage = await tokenUsageStore.snapshot(keyId ? { keyId } : {});
+        sendJson(res, 200, { ok: true, usage, ...(tokenLimits ? { tokenLimits } : {}) });
+        return true;
+      }
       if (parts[1] === 'requests' && method === 'GET') {
         const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 50));
         sendJson(res, 200, { ok: true, requests: metrics.snapshot().recent.slice(0, limit) });
@@ -169,6 +189,37 @@ export function createSystemRoutes(context) {
         }
         throw httpError(405, '不支持的方法');
       }
+    }
+
+    if (parts[1] === 'token-backups') {
+      if (!tokenUsageStore) throw httpError(503, 'Token 账本暂不可用');
+      if (parts.length === 2 && method === 'GET') {
+        sendJson(res, 200, { ok: true, backups: await tokenUsageStore.listBackups(), policy: { automatic: 'daily-on-write', keepAuto: 7, keepManual: 10 } });
+        return true;
+      }
+      if (parts.length === 2 && method === 'POST') {
+        const body = await readJson(req);
+        if (Object.keys(body).length) throw httpError(400, 'Token 备份不接受自定义路径或 SQL');
+        const backup = await tokenUsageStore.createBackup();
+        auditEvent('token_backup.create', backup.name, true);
+        sendJson(res, 200, { ok: true, backup });
+        return true;
+      }
+      if (parts.length === 4 && parts[3] === 'download' && method === 'GET') {
+        let backup;
+        try { backup = await tokenUsageStore.openBackup(parts[2]); }
+        catch { throw httpError(400, 'Token 备份不存在或不可读'); }
+        if (res.destroyed || res.writableEnded) { backup.stream.destroy(); return true; }
+        auditEvent('token_backup.download', backup.name, true);
+        res.writeHead(200, {
+          'content-type': 'application/vnd.sqlite3', 'content-length': backup.size,
+          'content-disposition': 'attachment; filename="' + backup.name.replace(/[^A-Za-z0-9._-]/g, '_') + '"',
+          'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+        });
+        await pipeline(backup.stream, res);
+        return true;
+      }
+      throw httpError(404, '未知 Token 备份接口');
     }
 
     if (parts[1] === 'backups') {

@@ -2,7 +2,7 @@ import {
   $, $$, icon, esc, app, api, closeModal, toast, dismissToast, findGroup, findKey,
   confirmModal, openModal, routerV1, copyToClipboard, downloadText, toggleTheme, copyEndpoint,
 } from './core.js';
-import { loadState } from './data.js';
+import { loadState, loadTokenBackups, createTokenBackup } from './data.js';
 import { bootAuth, showAuth } from './auth.js';
 import { navigate, navigateFromHub, render, showOffline } from './router.js';
 import { filterGroups } from './views/groups.js';
@@ -406,6 +406,8 @@ async function runAction(action, element, event) {
   if (action === 'reset-stats') { await resetStats(); return; }
   if (action === 'reload-config') { await reloadConfigAction(); return; }
   if (action === 'restart-service') { await restartServiceAction(); return; }
+  if (action === 'refresh-token-backups') { await loadTokenBackups(); return; }
+  if (action === 'create-token-backup') { await createTokenBackup(); return; }
   if (action === 'create-backup') { openBackupModal(); return; }
   if (action === 'restore-backup') { await restoreBackup(element.dataset.name); return; }
   if (action === 'delete-backup') { await deleteBackup(element.dataset.name); return; }

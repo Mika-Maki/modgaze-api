@@ -15,6 +15,7 @@ async function browserModule(path, bindings = {}) {
   return vm.runInNewContext(script + '\n;({' + [...named, ...functions].join(',') + '});', { Date, Intl, ...bindings }, { filename: path });
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+const unlimitedTokens = { totalTokens: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, dayTokens: 0 };
 const classList = () => ({ add() {}, remove() {}, toggle() {} });
 const coreModule = () => browserModule('core.js', {
   document: { hidden: false, querySelector: () => null, querySelectorAll: () => [], documentElement: { dataset: {} } },
@@ -38,7 +39,7 @@ function modalForm(modal, changes = {}, dataset = {}) {
   for (const match of modal.body.matchAll(/<input\b[^>]*>/g)) fields[attribute(match[0], 'name')] = attribute(match[0], 'value') || '';
   const expiry = inputTag(modal.body, 'expiresAt');
   return formFixture({ ...fields, ...changes }, {
-    group: attribute(formTag, 'data-group'), source: attribute(formTag, 'data-source'), keyId: attribute(formTag, 'data-key-id'), ...dataset,
+    form: attribute(formTag, 'data-form'), group: attribute(formTag, 'data-group'), source: attribute(formTag, 'data-source'), keyId: attribute(formTag, 'data-key-id'), ...dataset,
   }, expiry ? { dataset: { originalLocal: attribute(expiry, 'data-original-local'), originalExpiresAt: attribute(expiry, 'data-original-expires-at') }, validity: { valid: true } } : null);
 }
 function formFixture(fields, dataset = {}, expiry = { dataset: {}, validity: { valid: true } }) {
@@ -58,6 +59,7 @@ function formFixture(fields, dataset = {}, expiry = { dataset: {}, validity: { v
 class FormDataStub {
   constructor(form) { this.fields = form.fields; }
   get(name) { return this.fields[name] ?? null; }
+  getAll(name) { return Array.isArray(this.fields[name]) ? this.fields[name] : []; }
 }
 async function harness() {
   const core = await coreModule();
@@ -68,11 +70,48 @@ async function harness() {
   let closes = 0;
   const forms = await browserModule('forms.js', {
     ...core, FormData: FormDataStub,
-    api: async (path, options) => { requests.push(plain({ path, ...options })); return {}; },
+    api: async (path, options) => { requests.push(plain({ path, ...options })); return { group: { id: 'created', models: [], virtualKeys: [] } }; },
     loadState: async () => { reloads += 1; }, closeModal() { closes += 1; }, toast() {}, showOffline() {},
+    navigate() {}, openSecretModal() {},
   });
   return { core, dialogs, forms, requests, get modal() { return modal; }, get reloads() { return reloads; }, get closes() { return closes; } };
 }
+
+test('all MR creation forms submit UTC expiry or unlimited and reject past or invalid dates', async () => {
+  await inTimezone('Asia/Singapore', async () => {
+    const h = await harness();
+    const group = { id: 'demo', name: 'Demo', upstreamKey: { set: true }, models: [] };
+    h.core.app.data = { groups: [group] };
+    const common = { id: 'created', group: 'demo', name: 'Created', label: 'client', protocols: ['chat'], baseURL: 'http://127.0.0.1:1/v1', upstreamApiKey: 'synthetic-key', models: 'model', rateMaxConcurrent: '0', rateRpm: '0' };
+    for (const [open, endpoint] of [
+      [() => h.dialogs.openVirtualKeyModal('demo'), '/api/groups/demo/virtual-keys'],
+      [() => h.dialogs.openCreateGroupModal(), '/api/groups'],
+      [() => h.dialogs.openCloneModal(group), '/api/groups/demo/clone'],
+    ]) {
+      open();
+      assert.equal(attribute(inputTag(h.modal.body, 'expiresAt'), 'type'), 'datetime-local');
+      assert.equal(attribute(inputTag(h.modal.body, 'expiresAt'), 'value'), '');
+      for (const [local, utc] of [['2099-01-02T10:00:00', '2099-01-02T02:00:00.000Z'], ['', null]]) {
+        const fixture = modalForm(h.modal, { ...common, expiresAt: local });
+        const count = h.requests.length;
+        await h.forms.handleSubmit(fixture.event);
+        assert.equal(fixture.form.error.textContent, '');
+        assert.equal(h.requests.length, count + 1);
+        assert.equal(h.requests.at(-1).path, endpoint);
+        assert.equal(h.requests.at(-1).body.expiresAt, utc);
+      }
+      for (const local of ['2000-01-01T00:00:00', '2099-02-30T00:00:00']) {
+        const count = h.requests.length;
+        const fixture = modalForm(h.modal, { ...common, expiresAt: local });
+        await h.forms.handleSubmit(fixture.event);
+        assert.ok(fixture.form.error.textContent);
+        assert.equal(h.requests.length, count);
+      }
+    }
+    h.dialogs.openApiKeyModal('demo');
+    assert.equal(inputTag(h.modal.body, 'expiresAt'), undefined);
+  });
+});
 
 test('existing MR edit modal exposes exact expiry label, seconds and actual browser timezone only for virtual keys', async () => {
   await inTimezone('Asia/Singapore', async () => {
@@ -104,12 +143,12 @@ test('MR edit form submits label with future UTC ISO, clearing sends null, direc
     const future = modalForm(h.modal, { label: ' After ', expiresAt: '2037-07-08T12:34:56' });
     await h.forms.handleSubmit(future.event);
     assert.equal(future.form.error.textContent, '');
-    assert.deepEqual(h.requests[0], { path: '/api/groups/demo%2Fwest/virtual-keys/key%2F1', method: 'PATCH', body: { label: 'After', expiresAt: '2037-07-08T04:34:56.000Z' } });
+    assert.deepEqual(h.requests[0], { path: '/api/groups/demo%2Fwest/virtual-keys/key%2F1', method: 'PATCH', body: { label: 'After', expiresAt: '2037-07-08T04:34:56.000Z', tokenLimits: unlimitedTokens } });
     h.dialogs.openKeyLabelModal({ id: 'key-1', label: 'Never', expiresAt: '2037-01-01T00:00:00Z' }, 'virtual', 'demo');
     const clear = modalForm(h.modal, { expiresAt: '' });
     await h.forms.handleSubmit(clear.event);
     assert.equal(clear.form.error.textContent, '');
-    assert.deepEqual(h.requests[1].body, { label: 'Never', expiresAt: null });
+    assert.deepEqual(h.requests[1].body, { label: 'Never', expiresAt: null, tokenLimits: unlimitedTokens });
     h.dialogs.openKeyLabelModal({ id: 'direct-1', label: 'Direct' }, 'api', 'demo');
     const direct = modalForm(h.modal, { expiresAt: 'invalid-injected-field' });
     await h.forms.handleSubmit(direct.event);

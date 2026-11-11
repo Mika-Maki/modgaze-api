@@ -39,6 +39,21 @@ function intOrNull(text) {
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error('token 数值必须是正整数，或留空表示不限制');
   return number;
 }
+function newKeyExpiryFromForm(fd, form) {
+  const expiresAt = keyExpiryFromForm(fd, form);
+  if (expiresAt !== null && Date.parse(expiresAt) <= Date.now()) throw new Error('新密钥的 Expires At 必须晚于当前时间');
+  return expiresAt;
+}
+function keyTokenLimitsFromForm(fd) {
+  const result = {};
+  for (const name of ['totalTokens', 'inputTokens', 'outputTokens', 'cachedTokens', 'dayTokens']) {
+    const text = value(fd, 'tokenLimit_' + name);
+    const number = text === '' ? 0 : Number(text);
+    if (!Number.isSafeInteger(number) || number < 0) throw new Error('Token 限额必须是非负安全整数，留空或 0 表示不限');
+    result[name] = number;
+  }
+  return result;
+}
 function rateLimitValue(fd, name, label) {
   const text = value(fd, name);
   const number = Number(text);
@@ -149,6 +164,7 @@ export async function handleSubmit(event) {
       const body = {
         id: value(fd, 'id'), name: value(fd, 'name'), upstreamApiKey: value(fd, 'upstreamApiKey'),
         routes, models, label: value(fd, 'label') || '默认密钥',
+        expiresAt: newKeyExpiryFromForm(fd, form), tokenLimits: keyTokenLimitsFromForm(fd),
         rateLimits: groupRateLimitsFromForm(fd),
       };
       const result = await api('/api/groups', { method: 'POST', body });
@@ -296,7 +312,7 @@ export async function handleSubmit(event) {
     await withForm(form, async () => {
       const groupId = value(fd, 'group');
       if (!groupId) throw new Error('请选择归属分组');
-      const body = { label: value(fd, 'label') };
+      const body = { label: value(fd, 'label'), expiresAt: newKeyExpiryFromForm(fd, form), tokenLimits: keyTokenLimitsFromForm(fd) };
       const custom = value(fd, 'key');
       if (custom) body.key = custom;
       const result = await api('/api/groups/' + encodeURIComponent(groupId) + '/virtual-keys', { method: 'POST', body });
@@ -329,7 +345,10 @@ export async function handleSubmit(event) {
       const source = form.dataset.source === 'api' ? 'api-keys' : 'virtual-keys';
       const keyId = form.dataset.keyId;
       const body = { label: value(fd, 'label') };
-      if (form.dataset.source === 'virtual') body.expiresAt = keyExpiryFromForm(fd, form);
+      if (form.dataset.source === 'virtual') {
+        body.expiresAt = keyExpiryFromForm(fd, form);
+        body.tokenLimits = keyTokenLimitsFromForm(fd);
+      }
       await api('/api/groups/' + encodeURIComponent(groupId) + '/' + source + '/' + encodeURIComponent(keyId), { method: 'PATCH', body });
       closeModal();
       await loadState();
@@ -340,7 +359,7 @@ export async function handleSubmit(event) {
   if (kind === 'clone-group') {
     await withForm(form, async () => {
       const groupId = form.dataset.group;
-      const result = await api('/api/groups/' + encodeURIComponent(groupId) + '/clone', { method: 'POST', body: { id: value(fd, 'id'), name: value(fd, 'name') } });
+      const result = await api('/api/groups/' + encodeURIComponent(groupId) + '/clone', { method: 'POST', body: { id: value(fd, 'id'), name: value(fd, 'name'), expiresAt: newKeyExpiryFromForm(fd, form), tokenLimits: keyTokenLimitsFromForm(fd) } });
       closeModal();
       const refreshed = await loadState({ renderPage: false });
       if (refreshed !== false) navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');

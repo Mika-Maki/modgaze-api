@@ -3,6 +3,7 @@ import { $, icon, esc, fmtNum, fmtPercent, app } from "../core.js";
 import { eyeMarkup } from "../eye.js";
 import { initOrbit } from "../orbit.js";
 import { beginCrt } from "../crt.js";
+import { renderTokenUsage } from "./dashboard.js";
 
 function card(options) {
   return '<a class="orbit-card" href="' + options.href + '" data-module="' + options.module + '" data-orbit="' + options.orbit + '" data-action="enter-module" data-href="' + options.href + '" style="--i:' + options.index + '" aria-label="' + esc(options.title) + '">' +
@@ -100,7 +101,7 @@ function renderHub() {
       '<div class="hub-dock-copy"><span class="hub-dock-kicker">LIVE CORTEX</span><b data-hub-requests>' + requests + '</b><span>次请求</span><em data-hub-errors>' + errorRate + ' errors</em></div>' +
       '<div class="hub-dock-meta"><span class="hub-nocturne">LOCAL ONLY · NO TELEMETRY</span><span id="sidebar-version">v' + esc(data.version || '1.1.0') + '</span></div>' +
     '</div>' +
-  '</section>';
+  '</section><section class="token-usage token-usage--hub" data-token-usage aria-label="Token 用量">' + renderTokenUsage() + '</section>';
 }
 
 function mountHub() {

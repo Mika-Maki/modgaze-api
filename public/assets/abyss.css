@@ -458,6 +458,19 @@ body[data-route="console"] .tab.active { background: rgba(143, 48, 32, 0.18); bo
 body[data-route="console"] .switch input:checked + .track { background: linear-gradient(90deg, #8c3027, #d18b51); }
 
 /* ---------- hub stage ---------- */
+.token-usage { padding: 18px 0; }
+.token-usage--hub { position: relative; z-index: 7; width: min(900px, calc(100% - 40px)); margin: 0 auto 24px; }
+.token-usage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.token-usage-card { border: 1px solid rgba(236,195,154,.14); border-radius: 12px; padding: 18px 20px; background: rgba(30,18,17,.85); }
+.token-usage-label { display: block; color: var(--text-soft); font: 12px/1.5 var(--mono); }
+.token-usage-label small { color: var(--faint); margin-left: 6px; }
+.token-usage-card strong { display: block; margin: 8px 0 14px; color: #e2bf9c; font: 28px/1.2 var(--mono); overflow-wrap: anywhere; }
+.token-usage-breakdown { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--faint); font: 11px/1.6 var(--mono); }
+.token-usage-breakdown b { color: var(--text-soft); font-weight: 500; }
+.token-usage-note { margin: 10px 2px 0; color: var(--faint); font-size: 11px; line-height: 1.7; }
+.token-usage-note [role="status"] { color: #e2bf9c; }
+body[data-page-hidden="true"] *, body[data-page-hidden="true"] *::before, body[data-page-hidden="true"] *::after { animation-play-state: paused !important; }
+@media (max-width: 600px) { .token-usage-grid { grid-template-columns: 1fr; } }
 .hub-stage {
   position: relative;
   width: 100%;

@@ -62,6 +62,8 @@ async function fixture(t, { limits, reload = async () => {}, listen = true } = {
     compiles++;
     return result;
   };
+  const readLimits = store.readRateLimits.bind(store);
+  store.readRateLimits = async () => { reads++; return readLimits(); };
   const admin = await createAdmin({ configPath, authPath, store, runDir: join(dir, 'run'), projectRoot: join(dir, 'no-service-scripts'), adminPort: 0 });
   let closed = false;
   async function close() {
@@ -97,7 +99,8 @@ test('401 request bursts never read or compile full configuration', async t => {
   assert.equal(f.compiles(), 1);
   assert.equal(f.clock.scheduled, 1, 'requests do not arm refreshes');
   await f.clock.tick();
-  assert.equal(f.compiles(), 2, 'only the independent timer compiles');
+  assert.equal(f.compiles(), 1, 'maintenance reads do not request a full configuration snapshot');
+  assert.equal(f.reads(), 2, 'the independent timer still securely reads limits');
   assert.equal(f.clock.unrefs, f.clock.scheduled);
 });
 
@@ -138,8 +141,8 @@ test('refreshes do not overlap and stale reads cannot overwrite a newer reload',
   const f = await fixture(t);
   await f.login();
   const entered = deferred(), finish = deferred();
-  const read = f.store.read;
-  f.store.read = async () => { const snapshot = await read(); entered.resolve(); await finish.promise; return snapshot; };
+  const read = f.store.readRateLimits;
+  f.store.readRateLimits = async () => { const limits = await read(); entered.resolve(); await finish.promise; return limits; };
   const pending = f.clock.tick();
   await entered.promise;
   try {
@@ -174,8 +177,8 @@ test('refresh serializes with saves and never applies a failed uncommitted chang
 test('close clears scheduled refresh and late in-flight completion cannot rearm it', async t => {
   const f = await fixture(t);
   const entered = deferred(), finish = deferred();
-  const read = f.store.read;
-  f.store.read = async () => { const snapshot = await read(); entered.resolve(); await finish.promise; return snapshot; };
+  const read = f.store.readRateLimits;
+  f.store.readRateLimits = async () => { const limits = await read(); entered.resolve(); await finish.promise; return limits; };
   const pending = f.clock.tick();
   await entered.promise;
   await f.close();
@@ -217,7 +220,7 @@ test('a secondary listener shares cache without owning its timer lifecycle', asy
   await new Promise(resolve => secondary.close(resolve));
   assert.equal(f.clock.pending, 1);
   await f.clock.tick();
-  assert.equal(f.compiles(), 2);
+  assert.equal(f.compiles(), 1);
   assert.equal((await f.request('/api/auth/status')).status, 200);
 });
 

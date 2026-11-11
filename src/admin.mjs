@@ -23,6 +23,7 @@ import { fileToDisplay } from './admin-keys.mjs';
 import { createGroupTest, createRouterTest } from './admin-probe.mjs';
 import { createGroupRoutes } from './admin-routes-groups.mjs';
 import { createSystemRoutes } from './admin-routes-system.mjs';
+import { createTokenUsageStore } from './token-usage.mjs';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const round = value => Math.round(value);
@@ -57,6 +58,7 @@ export async function createAdmin(options = {}) {
   const reload = options.reload ?? (async () => {});
   const metrics = options.metrics ?? createMetrics();
   const requestAudit = options.requestAudit ?? createRequestAudit();
+  const tokenUsageStore = options.tokenUsageStore ?? createTokenUsageStore({ directory: join(runDir, 'token-usage') });
   const auth = new AdminAuth(authPath);
   const limiter = createRequestLimiter();
   const rateLimitsRefreshMs = options.rateLimitsRefreshMs ?? 5000;
@@ -97,11 +99,11 @@ export async function createAdmin(options = {}) {
     const refresh = async () => {
       if (limitsClosed || reloadingLimits) return;
       const generation = limitsGeneration;
-      const snapshot = await store.read();
+      const nextLimits = store.readRateLimits ? await store.readRateLimits() : (await store.read()).compiled.rateLimits;
       if (limitsClosed || reloadingLimits || generation !== limitsGeneration) return;
-      const signature = JSON.stringify(snapshot.compiled.rateLimits);
+      const signature = JSON.stringify(nextLimits);
       if (signature !== rateLimitsSignature) {
-        rateLimits = normalizeRateLimits(snapshot.compiled.rateLimits);
+        rateLimits = normalizeRateLimits(nextLimits);
         rateLimitsSignature = signature;
       }
     };
@@ -400,7 +402,7 @@ export async function createAdmin(options = {}) {
   }
 
   const system = createSystemRoutes({
-    store, metrics, requestAudit, audit, auditEvent, serviceStatus, statePayload, runtimeInfo,
+    store, metrics, requestAudit, tokenUsageStore, audit, auditEvent, serviceStatus, statePayload, runtimeInfo,
     currentAdminPort, routerPort, configWarnings, incomingConfig,
     redactedConfig, restartRequired, projectRoot, backupDir, auth, acquireLogin,
   });
@@ -450,7 +452,7 @@ export async function createAdmin(options = {}) {
 
     // Backup downloads can reconstruct the raw config from disk, so they stay
     // console-only even for an authenticated tunnel session.
-    if (parts[1] === 'backups' && parts.length === 4 && parts[3] === 'download') requireLocal(req);
+    if (['backups', 'token-backups'].includes(parts[1]) && parts.length === 4 && parts[3] === 'download') requireLocal(req);
 
     if (parts[1] === 'groups') {
       if (parts.length === 2) return await groups.handleGroupCollection(req, res);
@@ -483,6 +485,10 @@ export async function createAdmin(options = {}) {
       status = 429;
       message = '请求过于频繁，请稍后重试';
       code = 'rate_limit_error';
+    } else if (error?.code === 'token_usage_unavailable') {
+      status = 503;
+      message = 'Token 账本暂不可用，请在本机检查文件权限或服务日志';
+      code = 'token_usage_unavailable';
     } else if (error instanceof HttpError) {
       status = error.status;
       message = error.message;
@@ -495,7 +501,7 @@ export async function createAdmin(options = {}) {
       detail = friendly.detail;
       const raw = error instanceof Error ? error.message : String(error);
       if (error instanceof SyntaxError) { message = '配置或请求 JSON 无效'; detail = null; status = 400; }
-      else if (/(Invalid|requires|Duplicate|Unknown|Unsafe|At least one|must have mode|environment variable|Model has no|Upstream credential)/.test(raw)) status = 400;
+      else if (/(Invalid|requires|Duplicate|Unknown|Unsafe|At least one|must have mode|environment variable|Model has no|Upstream credential|tokenLimits)/.test(raw)) status = 400;
       else if (error?.code === 'ENOENT') status = 404;
       else if (error?.code === 'EEXIST') status = 409;
       else status = 500;
@@ -573,6 +579,9 @@ export async function createAdmin(options = {}) {
     return closeServer.apply(this, args);
   };
   server.on('close', () => { stopLimitsRefresh(); clearInterval(prune); });
+  server.on('close', () => {
+    if (!options.tokenUsageStore) void tokenUsageStore.close().catch(() => console.error(JSON.stringify({ event: 'token_usage_close_error' })));
+  });
   server.adminAuthPath = authPath;
   server.adminBackupDir = backupDir;
   server.adminMetrics = metrics;

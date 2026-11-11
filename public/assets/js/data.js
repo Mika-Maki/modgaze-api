@@ -1,6 +1,7 @@
 import { $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals } from "./core.js";
 import { render, renderLoading, renderFatal, showOffline, hideOffline } from "./router.js";
-import { updateLiveStats } from "./views/dashboard.js";
+import { updateLiveStats, updateTokenUsage } from "./views/dashboard.js";
+import { updateTokenBackups } from './views/system.js';
 let stateRequestSequence = 0;
 function formIdentity(form) {
   return JSON.stringify(Object.keys(form.dataset).sort().map(key => [key, form.dataset[key]]));
@@ -66,22 +67,64 @@ async function loadState({ silent = false, renderPage = true } = {}) {
     return false;
   }
 }
-function startPolling() {
-  stopPolling();
-  app.polling = setInterval(pollStats, 4000);
-}
-function stopPolling() {
-  if (app.polling) clearInterval(app.polling);
+let pollingGeneration = 0;
+let pollingActive = false;
+let pollingDelay = 4000;
+let pollingFlight = null;
+let visibilityBound = false;
+function clearPollTimer() {
+  if (app.polling != null) clearTimeout(app.polling);
   app.polling = null;
 }
+function schedulePoll(delay = pollingDelay) {
+  clearPollTimer();
+  if (!pollingActive || !app.authenticated || document.hidden || pollingFlight) return;
+  const retryAt = Math.max(app.pollStatsRetryAt || 0, app.adminRetryAt || 0);
+  app.polling = setTimeout(() => { app.polling = null; void pollStats(); }, Math.max(delay, retryAt - Date.now()));
+}
+function handlePollingVisibility() {
+  if (document.body?.dataset) document.body.dataset.pageHidden = String(document.hidden);
+  if (document.hidden) { clearPollTimer(); return; }
+  if (pollingActive && app.authenticated) void pollStats();
+}
+function startPolling() {
+  stopPolling();
+  pollingActive = true;
+  pollingDelay = 4000;
+  app.tokenUsage = null;
+  app.tokenUsageSession = app.csrf;
+  app.tokenUsageError = '';
+  if (!visibilityBound && document.addEventListener) {
+    document.addEventListener('visibilitychange', handlePollingVisibility);
+    visibilityBound = true;
+  }
+  if (document.body?.dataset) document.body.dataset.pageHidden = String(document.hidden);
+  schedulePoll();
+}
+function stopPolling() {
+  pollingActive = false;
+  pollingGeneration += 1;
+  clearPollTimer();
+  pollingFlight = null;
+  app.pollStatsInFlight = false;
+  app.tokenUsage = null;
+  app.tokenUsageSession = null;
+  app.tokenUsageLoading = false;
+  app.tokenUsageError = '';
+}
 async function pollStats() {
-  if (!app.authenticated || document.hidden || app.pollStatsInFlight) return;
-  if (Date.now() < Math.max(app.pollStatsRetryAt, app.adminRetryAt)) return;
+  clearPollTimer();
+  if (!app.authenticated || document.hidden || pollingFlight) return;
+  if (Date.now() < Math.max(app.pollStatsRetryAt || 0, app.adminRetryAt || 0)) { schedulePoll(0); return; }
+  const flight = { session: app.csrf, generation: pollingGeneration };
+  pollingFlight = flight;
   app.pollStatsInFlight = true;
-  const session = app.csrf;
+  const current = () => pollingFlight === flight && flight.session === app.csrf && flight.generation === pollingGeneration && app.authenticated;
   try {
     const payload = await api('/api/stats');
-    if (session !== app.csrf || !app.authenticated) return;
+    if (!current()) return;
+    const changed = payload.stats?.requests !== app.stats?.requests;
+    pollingDelay = changed ? 4000 : Math.min(30000, pollingDelay * 2);
     app.stats = payload.stats;
     app.lastTick = Date.now();
     app.pollStatsRetryAt = 0;
@@ -90,18 +133,88 @@ async function pollStats() {
     if (!app.modal && app.data && payload.configRevision !== undefined && payload.configRevision !== app.data.configRevision) {
       await loadState({ silent: true });
     }
+    if (!current()) return;
     updateLiveStats();
     updateChrome();
   } catch (error) {
-    if (session !== app.csrf || !app.authenticated) return;
+    if (!current()) return;
     if (error.status === 429) {
       const delay = Number.isFinite(error.retryAfter) ? Math.max(1, error.retryAfter) * 1000 : 4000;
       app.pollStatsRetryAt = Date.now() + delay;
     }
     if (error.network) showOffline('管理服务连接中断，正在自动重试…');
   } finally {
-    app.pollStatsInFlight = false;
+    if (pollingFlight === flight) {
+      pollingFlight = null;
+      app.pollStatsInFlight = false;
+      schedulePoll();
+    }
   }
 }
 
-export { loadState, startPolling, stopPolling, pollStats };
+let tokenUsageSequence = 0;
+async function loadTokenUsage() {
+  if (!app.authenticated || app.route.name !== 'overview') return false;
+  const sequence = ++tokenUsageSequence;
+  const session = app.csrf;
+  const viewSequence = app.viewSequence;
+  const current = () => sequence === tokenUsageSequence && session === app.csrf && app.authenticated && app.route.name === 'overview' && viewSequence === app.viewSequence;
+  if (app.tokenUsageSession !== session) app.tokenUsage = null;
+  app.tokenUsageSession = session;
+  app.tokenUsageLoading = true;
+  app.tokenUsageError = '';
+  updateTokenUsage();
+  try {
+    const payload = await api('/api/token-usage');
+    if (!current()) return false;
+    const usage = payload.usage;
+    const fields = ['inputTokens', 'outputTokens', 'cachedTokens', 'totalTokens', 'requests'];
+    if (!usage || typeof usage.day !== 'string' || typeof usage.timeZone !== 'string' || !['today', 'total'].every(period => fields.every(field => Number.isSafeInteger(usage[period]?.[field]) && usage[period][field] >= 0))) throw new Error('Token 用量数据无效');
+    app.tokenUsage = usage;
+    return true;
+  } catch (error) {
+    if (!current()) return false;
+    app.tokenUsageError = error.message || '暂时无法加载 Token 用量';
+    return false;
+  } finally {
+    if (current()) { app.tokenUsageLoading = false; updateTokenUsage(); }
+  }
+}
+
+let tokenBackupsSequence = 0;
+async function loadTokenBackups() {
+  if (!app.authenticated || app.route.name !== 'system' || app.route.tab !== 'backups') return false;
+  const sequence = ++tokenBackupsSequence, session = app.csrf, viewSequence = app.viewSequence;
+  const current = () => sequence === tokenBackupsSequence && session === app.csrf && app.authenticated && app.route.name === 'system' && app.route.tab === 'backups' && viewSequence === app.viewSequence;
+  if (app.tokenBackupsSession !== session) app.tokenBackups = null;
+  app.tokenBackupsSession = session;
+  app.tokenBackupsLoading = true; app.tokenBackupsError = ''; updateTokenBackups();
+  try {
+    const payload = await api('/api/token-backups');
+    if (!current()) return false;
+    if (!Array.isArray(payload.backups) || !payload.backups.every(backup => typeof backup.name === 'string' && Number.isFinite(backup.size) && backup.size >= 0 && Number.isFinite(backup.mtimeMs))) throw new Error('账本备份列表无效');
+    app.tokenBackups = payload.backups;
+    return true;
+  } catch (error) {
+    if (!current()) return false;
+    app.tokenBackupsError = '账本备份加载失败：' + (error.message || '请稍后刷新');
+    return false;
+  } finally { if (current()) { app.tokenBackupsLoading = false; updateTokenBackups(); } }
+}
+async function createTokenBackup() {
+  if (!app.authenticated || app.tokenBackupCreating || app.route.name !== 'system' || app.route.tab !== 'backups') return false;
+  const session = app.csrf, viewSequence = app.viewSequence;
+  const current = () => session === app.csrf && app.authenticated && app.route.name === 'system' && app.route.tab === 'backups' && viewSequence === app.viewSequence;
+  app.tokenBackupCreating = true; app.tokenBackupsError = ''; updateTokenBackups();
+  try {
+    await api('/api/token-backups', { method: 'POST', body: {} });
+    if (!current()) return false;
+    toast('Token 账本备份已创建', 'success');
+    return await loadTokenBackups();
+  } catch (error) {
+    if (current()) app.tokenBackupsError = '账本备份创建失败：' + (error.message || '请稍后重试');
+    return false;
+  } finally { app.tokenBackupCreating = false; if (current()) updateTokenBackups(); }
+}
+
+export { loadState, startPolling, stopPolling, pollStats, loadTokenUsage, loadTokenBackups, createTokenBackup };

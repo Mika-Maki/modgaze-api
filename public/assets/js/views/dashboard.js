@@ -1,5 +1,17 @@
 import { $, $$, icon, esc, PROTOCOLS, PROTOCOL_LABEL, PROTOCOL_AUTH, AUDIT_LABELS, app, nf, fmtNum, fmtMs, fmtBytes, fmtPercent, fmtDuration, fmtTime, timeAgo, statusClass, protoBadge, protoBadges, groupAccent, routerBase, routerV1, findGroup, findKey, groupRequestStats, summary, settings, runtime, api, applyTheme, toggleTheme, updateChrome, setUnauthorizedHandler, emptyState, toast, dismissToast, openModal, closeModal, confirmModal, showTestResult, setTestLoading, copyToClipboard, copyEndpoint, downloadText, applyKeyReveals } from "../core.js";
 /* ---------------- overview ---------------- */
+function renderTokenUsage() {
+  const usage = app.tokenUsageSession === app.csrf ? app.tokenUsage : null;
+  const amount = (period, field) => !usage || (field !== 'totalTokens' && usage[period].requests > 0 && usage[period].observed?.[field] === 0) ? '—' : fmtNum(usage[period][field]);
+  const cards = [['today', 'DayToken', '今日'], ['total', 'TotalToken', '累计']].map(([period, label, description]) =>
+    '<div class="token-usage-card"><span class="token-usage-label">' + label + ' <small>' + description + '</small></span><strong>' + amount(period, 'totalTokens') + '</strong><div class="token-usage-breakdown"><span>In <b>' + amount(period, 'inputTokens') + '</b></span><span>Out <b>' + amount(period, 'outputTokens') + '</b></span><span>Cached <b>' + amount(period, 'cachedTokens') + '</b></span></div></div>'
+  ).join('');
+  const state = app.tokenUsageLoading ? '正在刷新…' : app.tokenUsageError ? (usage ? '刷新失败，保留上次用量' : '暂时无法加载用量') : '';
+  return '<div class="token-usage-grid">' + cards + '</div><p class="token-usage-note">' + (usage ? esc(usage.day) + ' · 日界时区 ' + esc(usage.timeZone) + ' · ' : '') + 'Total = In + Out；Cached 已含在 In 中。仅累计上游已返回的用量，缺失部分不估算。' + (state ? ' <span role="status">' + state + '</span>' : '') + '</p>';
+}
+function updateTokenUsage() {
+  $$('[data-token-usage]').forEach(node => { node.innerHTML = renderTokenUsage(); });
+}
 function renderOverview() {
   const data = app.data;
   const stats = app.stats || data.stats || {};
@@ -34,6 +46,7 @@ function renderOverview() {
       </div>
     </section>
 
+    <section class="token-usage" data-token-usage aria-label="Token 用量">${renderTokenUsage()}</section>
     <section class="stat-grid">
       <div class="stat-card">
         <div class="stat-top"><span class="stat-label">启用分组</span><span class="stat-icon purple">${icon('groups')}</span></div>
@@ -195,4 +208,4 @@ function updateLiveStats() {
   });
 }
 
-export { renderOverview, groupHealthRow, recentTable, recentRows, protocolMixHtml, trafficChartSvg, renderTrafficChart, updateLiveStats };
+export { renderTokenUsage, updateTokenUsage, renderOverview, groupHealthRow, recentTable, recentRows, protocolMixHtml, trafficChartSvg, renderTrafficChart, updateLiveStats };

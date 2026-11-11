@@ -7,6 +7,7 @@ import { createAdmin } from './admin.mjs';
 import { loadTLS, createTLSListener } from './tls.mjs';
 import { ConfigStore } from './admin-store.mjs';
 import { createMRExpiryCleaner } from './key-expiry-cleaner.mjs';
+import { createTokenUsageStore } from './token-usage.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const runDir = resolve(root, 'run');
@@ -49,9 +50,10 @@ try {
     console.log(JSON.stringify({ valid: true, groups: compiled.groups.length, models: compiled.groups.reduce((n, g) => n + g.models.length, 0), adminPort: adminEnabled ? adminPort : null, httpsPort: tls?.port ?? null, adminHttpsPort: adminTLS?.port ?? null }));
   } else {
     const metrics = createMetrics();
+    const tokenUsageStore = createTokenUsageStore({ directory: resolve(runDir, 'token-usage') });
     let currentCompiled = compiled;
     const logger = record => { if (currentCompiled.accessLog === true) console.log(JSON.stringify(record)); };
-    const server = createRouter(resolved, { logger, onRequest: metrics.record, onAudit: entry => console.log(JSON.stringify({ event: 'audit', ...entry })) });
+    const server = createRouter(resolved, { logger, tokenUsageStore, onRequest: metrics.record, onAudit: entry => console.log(JSON.stringify({ event: 'audit', ...entry })) });
     const secureServer = tls ? createTLSListener(server, tls) : null;
     async function reload(next) {
       const result = server.reload(next);
@@ -69,13 +71,28 @@ try {
     let admin = null;
     let secureAdmin = null;
     let stopping = false;
+    let finishingShutdown = false;
+    let shutdownTimer;
+    async function finishShutdown() {
+      if (finishingShutdown) return;
+      finishingShutdown = true;
+      clearTimeout(shutdownTimer);
+      try { await tokenUsageStore.close(); process.exit(0); }
+      catch { console.error(JSON.stringify({ event: 'token_usage_shutdown_error' })); process.exit(1); }
+    }
     const shutdown = () => {
       if (stopping) return;
       stopping = true;
       const listeners = [server, secureServer, admin, secureAdmin].filter(Boolean);
-      Promise.all([expiryCleaner.close(), ...listeners.map(s => new Promise(resolveClose => s.close(resolveClose)))]).then(() => process.exit(0));
+      Promise.all([expiryCleaner.close(), ...listeners.map(s => new Promise(resolveClose => s.close(resolveClose)))]).then(finishShutdown);
       for (const listener of listeners) listener.closeIdleConnections();
-      setTimeout(() => { for (const listener of listeners) listener.closeAllConnections(); process.exit(0); }, 10000).unref();
+      shutdownTimer = setTimeout(async () => {
+        for (const listener of listeners) listener.closeAllConnections();
+        // close events submit any partial usage before the ledger is drained.
+        await new Promise(resolveTurn => setImmediate(resolveTurn));
+        await finishShutdown();
+      }, 10000);
+      shutdownTimer.unref();
     };
 
     server.on('error', error => { console.error(JSON.stringify({ event: 'listen_error', code: error.code ?? 'UNKNOWN', host: compiled.host, port: compiled.port })); process.exitCode = 1; });
@@ -120,6 +137,7 @@ try {
             routerPort: () => server.address()?.port ?? compiled.port,
             reload,
             metrics,
+            tokenUsageStore,
             requestAudit: server.requestAudit,
           });
           await new Promise((resolveListen, rejectListen) => {

@@ -8,6 +8,7 @@ const FIELD_DEFAULTS = Object.freeze({
 const CONFIG_KEYS = new Set(['enabled', 'fields', 'ipSource', 'trustedProxies', 'maxEntries', 'maxPromptChars']);
 const BASE_FIELDS = ['time', 'requestId', 'method', 'protocol', 'status', 'outcome', 'durationMs'];
 const MAX_PARSE_BYTES = 1024 * 1024;
+const INITIAL_PARSE_BYTES = 8192;
 const plainObject = value => value !== null && typeof value === 'object'
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
@@ -90,18 +91,55 @@ function usageFields(parsed) {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => Number.isSafeInteger(value) && value >= 0));
 }
 
-// Observes only JSON bodies and SSE frames. One fixed-capacity byte buffer avoids
+// Observes only JSON bodies and SSE frames. One bounded byte buffer avoids
 // unbounded fragment arrays, unterminated lines and split UTF-8 decoding errors.
 // Oversized JSON is ignored; oversized SSE frames are skipped until a blank line.
-export function createAuditObserver(contentType, onUsage) {
+export function createAuditObserver(contentType, onUsage, { tokenUsage = false, protocol } = {}) {
   const type = typeof contentType === 'string' ? contentType.trim() : '';
   const sse = /^text\/event-stream(?:\s*;|$)/i.test(type);
   const json = /^application\/(?:[a-z0-9.+-]+\+)?json(?:\s*;|$)/i.test(type);
   let buffer, length = 0, overflow = false, lineLength = 0, afterCR = false;
   let latest = {};
+  const rawUsage = {};
+  let anthropic = protocol === 'messages' || protocol === 'anthropic';
+  function tokenFields(parsed) {
+    if (!plainObject(parsed)) return {};
+    const source = parsed.response?.usage ?? parsed.message?.usage ?? parsed.usage ?? parsed;
+    if (!plainObject(source)) return {};
+    anthropic ||= ['message_start', 'message_delta'].includes(parsed.type)
+      || Object.hasOwn(source, 'cache_read_input_tokens') || Object.hasOwn(source, 'cache_creation_input_tokens');
+    const fields = {
+      input: source.input_tokens ?? source.prompt_tokens,
+      output: source.output_tokens ?? source.completion_tokens,
+      cached: source.input_tokens_details?.cached_tokens ?? source.prompt_tokens_details?.cached_tokens,
+      cacheRead: source.cache_read_input_tokens, cacheCreation: source.cache_creation_input_tokens,
+      total: source.total_tokens,
+      reasoning: source.output_tokens_details?.reasoning_tokens ?? source.completion_tokens_details?.reasoning_tokens,
+    };
+    let changed = false;
+    for (const [key, value] of Object.entries(fields)) {
+      if (Number.isSafeInteger(value) && value >= 0) { rawUsage[key] = value; changed = true; }
+    }
+    if (!changed) return {};
+    const result = {};
+    if (rawUsage.input !== undefined) {
+      const input = rawUsage.input + (anthropic ? (rawUsage.cacheRead ?? 0) + (rawUsage.cacheCreation ?? 0) : 0);
+      if (Number.isSafeInteger(input)) result.inputTokens = input;
+    }
+    if (rawUsage.output !== undefined) result.outputTokens = rawUsage.output;
+    const cached = anthropic ? rawUsage.cacheRead : rawUsage.cached;
+    if (cached !== undefined) result.cachedTokens = cached;
+    if (rawUsage.reasoning !== undefined) result.reasoningTokens = rawUsage.reasoning;
+    if (result.inputTokens !== undefined && result.outputTokens !== undefined) {
+      const total = result.inputTokens + result.outputTokens;
+      if (Number.isSafeInteger(total)) result.totalTokens = total;
+    } else if (rawUsage.total !== undefined) result.totalTokens = rawUsage.total;
+    return result;
+  }
   function parse(text) {
     try {
-      const fields = usageFields(JSON.parse(text));
+      const parsed = JSON.parse(text);
+      const fields = tokenUsage ? tokenFields(parsed) : usageFields(parsed);
       if (!Object.keys(fields).length) return;
       latest = { ...latest, ...fields };
       onUsage?.({ ...latest });
@@ -112,7 +150,14 @@ export function createAuditObserver(contentType, onUsage) {
     if (length + bytes.length > MAX_PARSE_BYTES) {
       overflow = true; length = 0; buffer = undefined; return;
     }
-    buffer ??= Buffer.allocUnsafe(MAX_PARSE_BYTES);
+    const required = length + bytes.length;
+    if (!buffer || required > buffer.length) {
+      let capacity = buffer?.length ?? INITIAL_PARSE_BYTES;
+      while (capacity < required) capacity = Math.min(MAX_PARSE_BYTES, capacity * 2);
+      const next = Buffer.allocUnsafe(capacity);
+      if (length) buffer.copy(next, 0, 0, length);
+      buffer = next;
+    }
     bytes.copy(buffer, length);
     length += bytes.length;
   }
@@ -124,6 +169,8 @@ export function createAuditObserver(contentType, onUsage) {
       if (data && data.trim() !== '[DONE]') parse(data);
     }
     length = 0; overflow = false;
+    // A rare large event must not pin a large allocation for the entire SSE.
+    if (buffer?.length > INITIAL_PARSE_BYTES) buffer = undefined;
   }
   const newline = Buffer.from('\n');
   function observe(chunk) {

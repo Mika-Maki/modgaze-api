@@ -147,6 +147,21 @@ test('JSON parser accepts 1MiB, ignores larger input and SSE recovers after over
   assert.deepEqual(await observe((': ignored\n').repeat(120000) + '\ndata: {"input_tokens":9}\n\n', 'text/event-stream', 65536), [{ inputTokens: 9 }]);
 });
 
+test('short audit streams allocate small buffers and still grow for larger usage frames', async t => {
+  const sizes = [], original = Buffer.allocUnsafe;
+  t.mock.method(Buffer, 'allocUnsafe', function (size) { sizes.push(size); return original(size); });
+  const usages = [], observer = createAuditObserver('text/event-stream', usage => usages.push(usage));
+  observer.resume();
+  for (let i = 0; i < 40; i++) observer.write('data: {"input_tokens":1}\n\n');
+  assert.ok(sizes.reduce((sum, size) => sum + size, 0) <= 16384, 'short frames must not preallocate a 1MiB buffer');
+  const large = 'data: ' + JSON.stringify({ padding: 'x'.repeat(128 * 1024), output_tokens: 3 }) + '\n\n';
+  for (let i = 0; i < large.length; i += 4096) observer.write(large.slice(i, i + 4096));
+  observer.end();
+  await new Promise((resolve, reject) => { observer.on('end', resolve); observer.on('error', reject); });
+  assert.deepEqual(usages.at(-1), { inputTokens: 1, outputTokens: 3 });
+  assert.ok(sizes.every(size => size <= 1024 * 1024));
+});
+
 test('system prompt extraction selects only supported roles and textual blocks', () => {
   const messages = [
     { role: 'system', content: 'system' }, { role: 'user', content: 'private user' },

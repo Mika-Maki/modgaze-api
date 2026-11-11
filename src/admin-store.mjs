@@ -6,6 +6,7 @@ import { PROTOCOLS } from './router.mjs';
 import { normalizeGroupRateLimits, normalizeRateLimits } from './rate-limit.mjs';
 import { normalizeMRExpiresAt } from './key-expiry.mjs';
 import { normalizeAuditConfig } from './request-audit.mjs';
+import { normalizeTokenLimits } from './token-usage.mjs';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const DANGEROUS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -73,7 +74,7 @@ export function listGroupKeys(rawGroup, resolvedGroup, field) {
       masked: isEnv ? 'env:' + entry.env : maskSecret(resolved),
       label: typeof info.label === 'string' ? info.label : null,
       createdAt: typeof info.createdAt === 'string' ? info.createdAt : null,
-      ...(field === 'virtualApiKeys' ? { expiresAt: normalizeMRExpiresAt(info.expiresAt) } : {}),
+      ...(field === 'virtualApiKeys' ? { expiresAt: normalizeMRExpiresAt(info.expiresAt), tokenLimits: normalizeTokenLimits(info.tokenLimits) } : {}),
     };
   });
 }
@@ -172,6 +173,7 @@ export function friendlyError(error) {
     [/Invalid or duplicate group id/i, '分组 ID 为空或重复'],
     [/Invalid group enabled flag/i, '分组启用状态必须是布尔值'],
     [/Group requires apiKeys or virtualApiKeys/i, '分组至少需要一个访问密钥（虚拟 Key 或直通 Key）'],
+    [/new keys require a future expiry/i, '新密钥的 Expires At 必须晚于当前时间'],
     [/Invalid MR (?:Expires at|expiry metadata)/i, 'MR Expires at 无效，请提供带时区的日期时间；留空表示永不过期'],
     [/Invalid API key/i, '访问密钥格式无效：不能为空或包含空白字符'],
     [/Duplicate API key across groups/i, '访问密钥与其他分组重复；同一密钥只能属于一个分组'],
@@ -200,6 +202,7 @@ export function friendlyError(error) {
     [/requestAudit\.maxPromptChars/i, '审计 System Prompt 字符上限必须在 1–65536 之间'],
     [/requestAudit/i, '审计配置无效：检查字段名称、布尔开关及 IP 来源'],
     [/rateLimits/i, '限流配置无效：仅支持已知字段及有效的非负安全整数'],
+    [/tokenLimits|token limits/i, 'Token 限额无效：仅支持已知字段及有效的非负安全整数，0 表示不限'],
     [/Invalid requestTimeoutMs/i, '总请求超时无效'],
     [/Invalid upstreamTimeoutMs/i, '上游空闲超时无效'],
     [/Upstream credential must not be a virtual API key/i, '上游 Key 不能与虚拟 Key 相同'],
@@ -381,6 +384,8 @@ export function removeKeyMeta(rawGroup, field, keyId) {
 }
 
 export class ConfigStore {
+  #expiryCache = null;
+
   constructor({ configPath, backupDir, reload }) {
     this.configPath = configPath;
     this.backupDir = backupDir;
@@ -408,6 +413,7 @@ export class ConfigStore {
 
   reloadCurrent() {
     return this.enqueue(async () => {
+      this.#expiryCache = null;
       const snapshot = await this.read();
       await this.reload(snapshot.resolved);
       this.lastApplied = structuredClone(snapshot);
@@ -423,6 +429,8 @@ export class ConfigStore {
   }
 
   async apply(raw, before, label, previousBytes) {
+    this.#expiryCache = null;
+    const previousRuntime = this.lastApplied ?? before;
     if (raw.adminPort !== undefined && (!Number.isSafeInteger(raw.adminPort) || raw.adminPort < 1 || raw.adminPort > 65535)) {
       throw httpError(400, '管理台端口必须在 1-65535 之间');
     }
@@ -443,8 +451,8 @@ export class ConfigStore {
         if (previousBytes !== undefined) await atomicWriteConfigBytes(this.configPath, previousBytes);
         else await atomicWriteConfig(this.configPath, before.raw);
       } catch { rolledBack = false; }
-      if (before) {
-        try { await this.reload(before.resolved); } catch { rolledBack = false; }
+      if (previousRuntime) {
+        try { await this.reload(previousRuntime.resolved); } catch { rolledBack = false; }
       }
       throw httpError(500, rolledBack ? '配置已回滚：路由热重载失败' : '路由热重载失败，配置回滚未完成，请在本机检查备份与服务状态');
     }
@@ -466,10 +474,17 @@ export class ConfigStore {
 
   async removeExpiredMRKeys(now = Date.now()) {
     if (!Number.isFinite(now)) throw new Error('Invalid MR expiry cleanup time');
-    const removed = [];
-    const result = await this.update((raw, before) => {
+    return this.enqueue(async () => {
+      const cached = await this.#readMaintenanceConfig();
+      if (now < cached.nextExpiry) {
+        // Keep the public snapshot detached without cloning it for maintenance.
+        let detached;
+        return { unchanged: true, removed: [], nextExpiry: cached.nextExpiry, get before() { return detached ??= structuredClone(cached.before); } };
+      }
+      const before = cached.before, raw = structuredClone(before.raw), removed = [];
+      const resolvedGroups = new Map(before.resolved.groups.map(group => [group.id, group]));
       for (const group of raw.groups) {
-        const resolved = resolvedGroupById(before.resolved, group.id);
+        const resolved = resolvedGroups.get(group.id);
         for (let index = (group.virtualApiKeys?.length ?? 0) - 1; index >= 0; index--) {
           const key = resolved?.virtualApiKeys?.[index];
           if (typeof key !== 'string') continue;
@@ -480,13 +495,56 @@ export class ConfigStore {
           removeKeyMeta(group, 'virtualApiKeys', keyId);
           removed.push({ group: group.id, keyId });
         }
-        // Delete the expired credential, not its routes/models or the whole group.
-        // Empty groups remain manageable but cannot accept traffic until re-enabled.
+        // Keep empty groups editable, but unable to accept traffic.
         if (!(group.apiKeys?.length || group.virtualApiKeys?.length)) group.enabled = false;
       }
-      return removed.length > 0;
-    }, { label: 'key.expire' });
-    return { ...result, removed };
+      const saved = await this.apply(raw, before, 'key.expire');
+      let nextExpiry = Infinity;
+      for (const group of saved.compiled.groups) {
+        for (const expiry of group.virtualKeyExpirations.values()) nextExpiry = Math.min(nextExpiry, expiry);
+      }
+      return { ...saved, before, removed, nextExpiry };
+    });
+  }
+
+  // Callers serialize this with writes using enqueue, just like read(). Only
+  // the small, detached limits object escapes the shared maintenance cache.
+  async readRateLimits() {
+    const cached = await this.#readMaintenanceConfig();
+    return normalizeRateLimits(cached.before.compiled.rateLimits);
+  }
+
+  async #readMaintenanceConfig() {
+    try {
+      // Keep secure open/fstat/read checks and byte comparisons on every read;
+      // filesystem timestamps alone cannot safely identify unchanged content.
+      const bytes = await readConfigBytes(this.configPath);
+      let cached = this.#expiryCache;
+      if (!cached || !cached.bytes.equals(bytes) || cached.environment.some(([name, value]) => process.env[name] !== value)) {
+        this.#expiryCache = null;
+        const raw = JSON.parse(bytes.toString('utf8'));
+        const before = { raw, ...validateConfig(raw) };
+        this.lastApplied ??= structuredClone(before);
+        let nextExpiry = Infinity;
+        for (const group of before.compiled.groups) {
+          for (const expiry of group.virtualKeyExpirations.values()) nextExpiry = Math.min(nextExpiry, expiry);
+        }
+        const environment = new Map();
+        const track = value => {
+          if (isObject(value) && typeof value.env === 'string') environment.set(value.env, process.env[value.env]);
+        };
+        for (const group of raw.groups) {
+          for (const value of [...(group.apiKeys ?? []), ...(group.virtualApiKeys ?? []), group.upstreamApiKey]) track(value);
+          for (const route of Object.values(group.routes ?? {})) track(route.upstreamApiKey);
+          for (const model of group.models) for (const route of Object.values(model.routes ?? {})) track(route.upstreamApiKey);
+        }
+        cached = this.#expiryCache = { bytes, before, nextExpiry, environment: [...environment] };
+      }
+      return cached;
+    } catch (error) {
+      this.#expiryCache = null;
+      throw error;
+    }
   }
 
   replace(raw, { label = 'replace' } = {}) {

@@ -39,6 +39,7 @@ export class RateLimitError extends Error {
 export function createRequestLimiter({ now = Date.now, maxBuckets = 10000, maxEvents = 250000 } = {}) {
   const buckets = new Map();
   let eventCount = 0;
+  let cleanupTimer = null;
   function prune(bucket, time) {
     let first = bucket.first;
     while (first < bucket.events.length && bucket.events[first] <= time - 60000) first++;
@@ -54,6 +55,21 @@ export function createRequestLimiter({ now = Date.now, maxBuckets = 10000, maxEv
       prune(bucket, time);
       if (!bucket.active && bucket.first === bucket.events.length) buckets.delete(id);
     }
+  }
+  function scheduleCleanup(delay = 60000) {
+    if (!eventCount) { clearTimeout(cleanupTimer); cleanupTimer = null; return; }
+    if (cleanupTimer) return;
+    cleanupTimer = setTimeout(() => {
+      cleanupTimer = null;
+      const time = now();
+      collect(time);
+      let next = time + 60000;
+      for (const bucket of buckets.values()) {
+        if (bucket.first < bucket.events.length) next = Math.min(next, bucket.events[bucket.first] + 60000);
+      }
+      scheduleCleanup(Math.max(1, next - time));
+    }, delay);
+    cleanupTimer.unref?.();
   }
   function acquire(rules) {
     const time = now();
@@ -92,6 +108,7 @@ export function createRequestLimiter({ now = Date.now, maxBuckets = 10000, maxEv
       if (rule.rpm) { bucket.events.push(time); eventCount++; }
       reserved.push([rule.id, bucket]);
     }
+    scheduleCleanup();
     let released = false;
     return () => {
       if (released) return;

@@ -76,6 +76,24 @@ test('recovery still rejects invalid replacement, insecure permissions, symlinks
   assert.equal(f.store.revision, 0);
 });
 
+test('failed update/import restores the applied runtime rather than an unapplied valid disk edit', async t => {
+  for (const operation of ['update', 'replace']) {
+    let runtime, fail = false;
+    const f = await fixture(t, async next => { runtime = structuredClone(next); if (fail) { fail = false; throw new Error('synthetic failure'); } });
+    await f.store.reloadCurrent();
+    const applied = structuredClone(runtime), revision = f.store.revision;
+    const external = structuredClone(f.config); external.groups[0].models[0].id = 'unapplied-external';
+    await writeFile(f.configPath, JSON.stringify(external));
+    const replacement = structuredClone(external); replacement.groups[0].models[0].id = 'failed-edit';
+    fail = true;
+    await assert.rejects(operation === 'replace' ? f.store.replace(replacement) : f.store.update(raw => { raw.groups[0].models[0].id = 'failed-edit'; }), /回滚/);
+    assert.deepEqual(runtime, applied, operation);
+    assert.deepEqual(f.store.lastApplied.resolved, applied);
+    assert.deepEqual(JSON.parse(await readFile(f.configPath, 'utf8')), external);
+    assert.equal(f.store.revision, revision);
+  }
+});
+
 test('authenticated import and backup restore recover bad disk config through the HTTP API', async t => {
   const f = await fixture(t);
   const backup = await f.store.createBackup('good');

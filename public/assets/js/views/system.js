@@ -64,6 +64,19 @@ function runtimeItem(label, value) {
   return '<div class="runtime-item"><span>' + esc(label) + '</span><b title="' + esc(value ?? '—') + '">' + esc(value ?? '—') + '</b></div>';
 }
 
+function tokenBackupsPanel() {
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  const backups = app.tokenBackupsSession === app.csrf ? app.tokenBackups : null;
+  const rows = (backups || []).map(backup => '<div class="backup-row"><code>' + esc(backup.name) + '</code><span class="size">' + fmtBytes(backup.size) + '</span><span class="time">' + fmtTime(backup.mtimeMs) + '</span><div class="card-actions">' + (local ? '<a class="icon-btn" href="/api/token-backups/' + esc(encodeURIComponent(backup.name)) + '/download" title="下载 Token 账本备份（仅本机）">' + icon('download') + '</a>' : '<span class="icon-btn" aria-disabled="true" title="备份下载仅限服务器本机">' + icon('download') + '</span>') + '</div></div>').join('');
+  const busy = app.tokenBackupsLoading || app.tokenBackupCreating;
+  return '<section class="panel"><div class="panel-head"><div><h2 class="panel-title">Token 账本备份</h2><p class="panel-sub">每天首次成功计量后自动备份，保留最近 7 份自动备份和 10 份手动备份。</p></div><div class="card-actions"><button class="btn btn-sm" data-action="refresh-token-backups"' + (busy ? ' disabled' : '') + '>刷新</button><button class="btn btn-sm btn-primary" data-action="create-token-backup"' + (busy ? ' disabled' : '') + '>' + (app.tokenBackupCreating ? '正在备份…' : '手动备份') + '</button></div></div><div class="panel-body">' + (app.tokenBackupsError ? '<div class="warning-box" role="alert">' + esc(app.tokenBackupsError) + '</div>' : '') + (rows ? '<div class="backup-list">' + rows + '</div>' : '<p class="panel-sub">' + (app.tokenBackupsLoading ? '正在加载账本备份…' : backups ? '还没有 Token 账本备份。' : '账本备份尚未加载。') + '</p>') + '<div class="info-box mt-3">SQLite 账本备份包含计量数据；下载仅限服务器本机。恢复前请停止服务，按文档执行离线恢复。</div></div></section>';
+}
+function updateTokenBackups() {
+  if (app.route.name !== 'system' || app.route.tab !== 'backups') return;
+  const target = document.querySelector('#token-backups-panel');
+  if (target) target.innerHTML = tokenBackupsPanel();
+}
+
 function systemBackupsTab() {
   const backups = app.data.backups || [];
   const localConsole = (function () {
@@ -75,7 +88,7 @@ function systemBackupsTab() {
       : '<span class="icon-btn" title="备份下载仅限服务器本机" aria-disabled="true">' + icon('download') + '</span>';
     return '<div class="backup-row"><code title="' + esc(backup.name) + '">' + esc(backup.name) + '</code><span class="size">' + fmtBytes(backup.size) + '</span><span class="time">' + fmtTime(backup.mtimeMs) + '</span><div class="card-actions">' + download + '<button class="icon-btn" data-action="restore-backup" data-name="' + esc(backup.name) + '" title="恢复此备份">' + icon('rotate') + '</button><button class="icon-btn" data-action="delete-backup" data-name="' + esc(backup.name) + '" title="删除备份">' + icon('trash') + '</button></div></div>';
   }).join('');
-  return '<div class="settings-layout"><div class="settings-stack"><section class="panel"><div class="panel-head"><div><h2 class="panel-title">配置备份</h2><p class="panel-sub">每次修改前自动创建；最多保留最近 40 份。</p></div><button class="btn btn-sm btn-primary" data-action="create-backup">' + icon('plus') + ' 立即备份</button></div><div class="panel-body">' + (rows ? '<div class="backup-list">' + rows + '</div>' : emptyState('还没有备份', '每次保存配置前都会自动备份。你也可以手动创建一份带标签的快照。', 'archive', '创建备份', 'create-backup')) + '</div></section></div><div class="settings-stack"><section class="panel"><div class="panel-head"><div><h2 class="panel-title">备份说明</h2></div></div><div class="panel-body"><div class="warning-box">' + icon('alert') + '<span>磁盘上的备份文件包含完整上游密钥与虚拟 Key，权限为 0600。下载只能在本机控制台触发，且返回的是脱敏版本；通过 Tunnel 访问时下载按钮不可用。恢复会覆盖当前 config/local.json，并触发热重载；管理台登录密码不受影响。</span></div><div class="info-box mt-3">' + icon('archive') + '<span>下载的备份可安全用于归档和分享；恢复操作使用服务器上的原始备份，建议恢复前先创建一份当前状态备份。</span></div></div></section></div></div>';
+  return '<div class="settings-layout"><div class="settings-stack"><section class="panel"><div class="panel-head"><div><h2 class="panel-title">配置备份</h2><p class="panel-sub">每次修改前自动创建；最多保留最近 40 份。</p></div><button class="btn btn-sm btn-primary" data-action="create-backup">' + icon('plus') + ' 立即备份</button></div><div class="panel-body">' + (rows ? '<div class="backup-list">' + rows + '</div>' : emptyState('还没有备份', '每次保存配置前都会自动备份。你也可以手动创建一份带标签的快照。', 'archive', '创建备份', 'create-backup')) + '</div></section><div id="token-backups-panel">' + tokenBackupsPanel() + '</div></div><div class="settings-stack"><section class="panel"><div class="panel-head"><div><h2 class="panel-title">备份说明</h2></div></div><div class="panel-body"><div class="warning-box">' + icon('alert') + '<span>磁盘上的备份文件包含完整上游密钥与虚拟 Key，权限为 0600。下载只能在本机控制台触发，且返回的是脱敏版本；通过 Tunnel 访问时下载按钮不可用。恢复会覆盖当前 config/local.json，并触发热重载；管理台登录密码不受影响。</span></div><div class="info-box mt-3">' + icon('archive') + '<span>下载的备份可安全用于归档和分享；恢复操作使用服务器上的原始备份，建议恢复前先创建一份当前状态备份。</span></div></div></section></div></div>';
 }
 
 function systemConfigTab() {
@@ -169,4 +182,4 @@ function systemAuditTab() {
   return '<div class="settings-stack">' + requestAuditSettingsPanel(requestSettings) + requestAuditPanel(requestSettings) + '<section class="panel"><div class="panel-head"><div><h2 class="panel-title">管理动作审计日志</h2><p class="panel-sub">最近 250 条管理动作，仅保存在内存中，重启后清空。</p></div><span class="badge">' + icon('clock') + ' ' + audit.length + ' 条</span></div><div class="panel-body">' + (rows ? '<div class="audit-list">' + rows + '</div>' : emptyState('暂无审计记录', '登录、修改分组、轮换 Key 等动作会出现在这里。', 'clock')) + '</div></section></div>';
 }
 
-export { renderSystemPage, systemGeneralTab, runtimeItem, systemBackupsTab, systemConfigTab, systemAuditTab };
+export { tokenBackupsPanel, updateTokenBackups, renderSystemPage, systemGeneralTab, runtimeItem, systemBackupsTab, systemConfigTab, systemAuditTab };

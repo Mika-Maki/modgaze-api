@@ -167,6 +167,31 @@ check('non-success upstream bodies cannot establish response ownership', async t
   assert.equal(f.calls.length, 1);
 });
 
+check('redaction survives metadata reloads and isolates rotated credentials from in-flight snapshots', async t => {
+  const started = deferred(), release = deferred();
+  t.after(release.resolve);
+  const oldKey = 'security-upstream', newKey = 'security-replacement-upstream';
+  const f = await fixture(t, () => {}, async (req, res, call) => {
+    if (call.body.hold) { started.resolve(); await release.promise; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ text: [oldKey, newKey, A].join('|') }));
+  });
+  const pending = request(f.origin, undefined, { body: payload({ hold: true }) });
+  await started.promise;
+  f.config.groups[0].name = 'Metadata only';
+  f.config.groups[0].apiKeys.reverse();
+  f.router.reload(f.config);
+  const unchanged = await request(f.origin, undefined, { body: payload() });
+  assert.equal(JSON.parse(unchanged.text).text, ['[REDACTED]', newKey, '[REDACTED]'].join('|'));
+  f.config.groups[0].upstreamApiKey = newKey;
+  f.router.reload(f.config);
+  const rotated = await request(f.origin, undefined, { body: payload() });
+  assert.equal(JSON.parse(rotated.text).text, [oldKey, '[REDACTED]', '[REDACTED]'].join('|'));
+  assert.equal(f.calls.at(-1).headers.authorization, 'Bearer ' + newKey);
+  release.resolve();
+  assert.equal(JSON.parse((await pending).text).text, ['[REDACTED]', newKey, '[REDACTED]'].join('|'));
+});
+
 check('tracking cache expires, evicts, rejects collisions and is bounded', () => {
   let now = 0; const scope = createResponseScope({ maxEntries: 2, ttlMs: 10, now: () => now });
   const binding = { modelId: model, fingerprint: 'hash' };

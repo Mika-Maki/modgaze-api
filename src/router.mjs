@@ -7,6 +7,7 @@ import { createResponseScope, createResponseObserver } from './response-scope.mj
 import { createGunzip, createBrotliDecompress, createUnzip } from 'node:zlib';
 import { secretRedactor } from './secrets.mjs';
 import { normalizeMRExpiresAt } from './key-expiry.mjs';
+import { normalizeTokenLimits } from './token-usage.mjs';
 import { validateResourceReferences, rejectResourceQuery } from './resource-policy.mjs';
 import { normalizeAuditConfig, resolveAuditIp, createAuditObserver, extractSystemPrompt, createRequestAudit } from './request-audit.mjs';
 
@@ -66,6 +67,8 @@ export function compileConfig(input) {
       secrets.add(key);
     }
     group.virtualKeyExpirations = new Map();
+    group.virtualKeyTokenLimits = new Map();
+    group.virtualKeyUsageIds = new Map();
     if (group.virtualKeyMeta !== undefined && !object(group.virtualKeyMeta)) throw new Error('Invalid MR expiry metadata');
     for (const key of group.virtualApiKeys) {
       const hash = digest(key);
@@ -73,6 +76,9 @@ export function compileConfig(input) {
       if (meta !== undefined && !object(meta)) throw new Error('Invalid MR expiry metadata');
       const expiry = normalizeMRExpiresAt(meta?.expiresAt);
       if (expiry !== null) group.virtualKeyExpirations.set(hash, Date.parse(expiry));
+      group.virtualKeyTokenLimits.set(hash, normalizeTokenLimits(meta?.tokenLimits));
+      if (meta?.tokenUsageId !== undefined && (typeof meta.tokenUsageId !== 'string' || !/^[a-f0-9]{64}$/.test(meta.tokenUsageId))) throw new Error('Invalid MR token usage identity');
+      group.virtualKeyUsageIds.set(hash, meta?.tokenUsageId ?? hash);
     }
     if (group.upstreamApiKey !== undefined && (typeof group.upstreamApiKey !== 'string' || !group.upstreamApiKey || /[\r\n]/.test(group.upstreamApiKey))) throw new Error('Invalid upstreamApiKey');
     if (group.upstreamApiKey) secrets.add(group.upstreamApiKey);
@@ -137,7 +143,7 @@ function authenticate(req, keys) {
   if (!group) throw fail(401, 'Invalid API key', 'authentication_error');
   const expiry = group.virtualKeyExpirations.get(hash);
   if (expiry !== undefined && Date.now() >= expiry) throw fail(401, 'MR API key has expired', 'authentication_error');
-  return { group, key };
+  return { group, key, keyHash: hash, usageId: group.virtualKeyUsageIds.get(hash) ?? hash, tokenLimits: group.virtualKeyTokenLimits.get(hash) };
 }
 
 function modelMetadata(model, group) {
@@ -302,7 +308,7 @@ function proxy(req, res, target, body, route, group, key, protocol, config, anth
         } else callback(null, chunk);
       } });
       const observers = observeId && upstream.statusCode >= 200 && upstream.statusCode < 300 ? [createResponseObserver(String(upstream.headers['content-type'] ?? ''), observeId)] : [];
-      if (observeUsage) observers.push(createAuditObserver(String(upstream.headers['content-type'] ?? ''), observeUsage));
+      if (observeUsage) observers.push(createAuditObserver(String(upstream.headers['content-type'] ?? ''), observeUsage, { tokenUsage: true, protocol }));
       responseHeaders['cache-control'] = 'no-store';
       responseHeaders['x-accel-buffering'] = 'no';
       res.writeHead(upstream.statusCode, responseHeaders);
@@ -318,9 +324,11 @@ function proxy(req, res, target, body, route, group, key, protocol, config, anth
   });
 }
 
-function compileState(input) {
+function compileState(input, previous) {
   const { config, keys, secrets } = compileConfig(input);
-  return { config, keys, secrets, redact: secretRedactor(secrets) };
+  const secretSet = new Set(secrets);
+  const unchanged = previous && previous.secretSet.size === secretSet.size && secrets.every(value => previous.secretSet.has(value));
+  return { config, keys, secrets, secretSet, redact: unchanged ? previous.redact : secretRedactor(secrets) };
 }
 
 function applyTimeouts(server, config) {
@@ -328,8 +336,13 @@ function applyTimeouts(server, config) {
   server.headersTimeout = Math.min(60000, config.requestTimeoutMs);
 }
 
-export function createRouter(input, { logger = () => {}, onRequest, onAudit } = {}) {
+export function createRouter(input, { logger = () => {}, onRequest, onAudit, tokenUsageStore, onTokenUsageError = () => console.error(JSON.stringify({ event: 'token_usage_error' })) } = {}) {
   let state = compileState(input);
+  let usageUnavailable = false;
+  function usageFailed() {
+    usageUnavailable = true;
+    try { onTokenUsageError(); } catch {}
+  }
   const requestAudit = createRequestAudit();
   requestAudit.configure(state.config.audit);
   // Keep admission/RPM and ownership state across reload; never infer old owners.
@@ -344,6 +357,8 @@ export function createRouter(input, { logger = () => {}, onRequest, onAudit } = 
     let groupId = null;
     let authKind = null;
     let modelId = null;
+    let usageKeyId = null;
+    let observedUsage;
     const auditFields = {};
     if (config.audit.enabled && config.audit.fields.requestIp) auditFields.requestIp = resolveAuditIp(req, config.audit);
     let release;
@@ -361,6 +376,14 @@ export function createRouter(input, { logger = () => {}, onRequest, onAudit } = 
       const status = aborted ? 499 : terminalError?.status ?? res.statusCode;
       const outcome = aborted ? 'aborted' : terminalError?.type ?? (status >= 400 ? 'error' : 'success');
       const duration = Date.now() - started;
+      if (tokenUsageStore && usageKeyId && observedUsage) {
+        const usage = Object.fromEntries(['inputTokens', 'outputTokens', 'cachedTokens', 'totalTokens']
+          .filter(field => Object.hasOwn(observedUsage, field)).map(field => [field, observedUsage[field]]));
+        if (Object.keys(usage).length) {
+          try { Promise.resolve(tokenUsageStore.record({ requestId, keyId: usageKeyId, group: groupId, usage, time: Date.now() })).catch(usageFailed); }
+          catch { usageFailed(); }
+        }
+      }
       try { logger({ event: 'request', request_id: requestId, method: req.method, protocol: protocol ?? 'local', status, outcome, duration_ms: duration }); } catch {}
       try { onRequest?.({ requestId, method: req.method, protocol: protocol ?? 'local', status, outcome, durationMs: duration, group: groupId, model: modelId, auth: authKind }); } catch {}
       if (config.audit.enabled) {
@@ -378,10 +401,10 @@ export function createRouter(input, { logger = () => {}, onRequest, onAudit } = 
       const url = new URL(req.url, 'http://localhost');
       anthropic = url.pathname.startsWith('/v1/messages');
       if (req.method === 'GET' && url.pathname === '/healthz') { json(res, 200, { status: 'ok' }); return; }
-      const { group, key } = authenticate(req, keys);
+      const { group, key, keyHash, usageId, tokenLimits } = authenticate(req, keys);
       groupId = group.id;
       authKind = group.virtualApiKeys.includes(key) ? 'virtual' : 'apiKey';
-      const keyHash = digest(key);
+      usageKeyId = usageId;
       if (config.audit.enabled && config.audit.fields.key) auditFields.key = keyHash.slice(0, 16);
       const owner = digest(JSON.stringify([group.id, keyHash]));
       const limits = config.rateLimits.api;
@@ -461,9 +484,15 @@ export function createRouter(input, { logger = () => {}, onRequest, onAudit } = 
         }
       }
       if (res.destroyed || req.aborted) return;
+      if (tokenLimits && Object.values(tokenLimits).some(value => value > 0)) {
+        if (!tokenUsageStore || usageUnavailable) throw fail(503, 'Token usage accounting is unavailable', 'token_usage_unavailable');
+        await tokenUsageStore.check(usageId, tokenLimits);
+        if (res.destroyed || req.aborted) return;
+      }
       await proxy(req, res, upstreamURL(route.baseURL, url.pathname, url.search), body, route, group, key, protocol, config, anthropic, deadline, redact, {
         owner, markError,
-        observeUsage: config.audit.enabled && ['inputTokens', 'outputTokens', 'reasoningTokens'].some(field => config.audit.fields[field]) ? usage => {
+        observeUsage: tokenUsageStore || (config.audit.enabled && ['inputTokens', 'outputTokens', 'reasoningTokens'].some(field => config.audit.fields[field])) ? usage => {
+          observedUsage = usage;
           for (const field of ['inputTokens', 'outputTokens', 'reasoningTokens']) {
             if (config.audit.fields[field] && Object.hasOwn(usage, field)) auditFields[field] = usage[field];
           }
@@ -478,7 +507,7 @@ export function createRouter(input, { logger = () => {}, onRequest, onAudit } = 
   server.requestAudit = requestAudit;
   // In-flight requests retain their immutable routing/credential snapshot.
   server.reload = nextInput => {
-    const next = compileState(nextInput);
+    const next = compileState(nextInput, state);
     state = next;
     requestAudit.configure(next.config.audit);
     applyTimeouts(server, next.config);

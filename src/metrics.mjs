@@ -13,6 +13,7 @@ export function createMetrics({ recentLimit = 200, bucketMs = 60000, bucketCount
   const authKinds = new Map();
   const buckets = new Map();
   const latencies = [];
+  let latencyPercentiles = null;
   const recent = [];
 
   const bump = (map, key, fields = {}) => {
@@ -33,6 +34,7 @@ export function createMetrics({ recentLimit = 200, bucketMs = 60000, bucketCount
     latencySum += durationMs;
     latencyMax = Math.max(latencyMax, durationMs);
     latencies.push(durationMs);
+    latencyPercentiles = null;
     if (latencies.length > 1000) latencies.splice(0, latencies.length - 1000);
 
     statuses.set(String(status), (statuses.get(String(status)) ?? 0) + 1);
@@ -84,7 +86,10 @@ export function createMetrics({ recentLimit = 200, bucketMs = 60000, bucketCount
         avgMs: bucket?.count ? Math.round(bucket.latencyMs / bucket.count) : 0,
       });
     }
-    const sorted = [...latencies].sort((a, b) => a - b);
+    if (!latencyPercentiles) {
+      const sorted = [...latencies].sort((a, b) => a - b);
+      latencyPercentiles = { p50Ms: Math.round(percentile(sorted, 0.5)), p95Ms: Math.round(percentile(sorted, 0.95)) };
+    }
     return {
       startedAt,
       uptimeMs: Math.max(0, now - startedAt),
@@ -93,8 +98,7 @@ export function createMetrics({ recentLimit = 200, bucketMs = 60000, bucketCount
       errorRate: requests ? errors / requests : 0,
       avgMs: requests ? Math.round(latencySum / requests) : 0,
       maxMs: latencyMax,
-      p50Ms: Math.round(percentile(sorted, 0.5)),
-      p95Ms: Math.round(percentile(sorted, 0.95)),
+      ...latencyPercentiles,
       byStatus: Object.fromEntries([...statuses.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
       byProtocol: Object.fromEntries([...protocols.entries()]),
       byGroup: Object.fromEntries([...groups.entries()]),
@@ -110,6 +114,7 @@ export function createMetrics({ recentLimit = 200, bucketMs = 60000, bucketCount
     errors = 0;
     latencySum = 0;
     latencyMax = 0;
+    latencyPercentiles = null;
     statuses.clear(); protocols.clear(); groups.clear(); authKinds.clear(); buckets.clear(); latencies.length = 0; recent.length = 0;
   }
 

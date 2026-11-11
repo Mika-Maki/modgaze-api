@@ -3,6 +3,7 @@ import { renderOverview, renderTrafficChart, updateLiveStats } from "./views/das
 import { renderHub, mountHub } from "./views/hub.js";
 import { cleanupOrbit } from "./orbit.js";
 import { standDownCrt } from "./crt.js";
+import { loadTokenUsage, loadTokenBackups } from "./data.js";
 import { renderGroupsPage, filterGroups } from "./views/groups.js";
 import { renderGroupDetailPage } from "./views/group-detail.js";
 import { renderKeysPage, filterKeys } from "./views/keys.js";
@@ -47,6 +48,7 @@ function setShell(routeName) {
   document.title = titles[routeName] || 'Modgaze · 控制中枢';
 }
 function render() {
+  app.viewSequence = (app.viewSequence || 0) + 1;
   updateChrome();
   setShell(app.route.name);
   delete document.body.dataset.transition;
@@ -62,8 +64,9 @@ function render() {
     default: html = renderHub();
   }
   view.innerHTML = html;
-  if (app.route.name === 'overview') mountHub();
+  if (app.route.name === 'overview') { mountHub(); void loadTokenUsage(); }
   else { cleanupOrbit(); standDownCrt(); }
+  if (app.route.name === 'system' && app.route.tab === 'backups') void loadTokenBackups();
   applyKeyReveals();
   filterGroups();
   filterKeys();

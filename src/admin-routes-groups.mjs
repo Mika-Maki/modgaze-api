@@ -8,6 +8,7 @@ import {
 import { addAccessKey, addGeneratedVirtualKey, assertProtocol, keyCount, modelFrom } from './admin-keys.mjs';
 import { normalizeGroupRateLimits } from './rate-limit.mjs';
 import { normalizeMRExpiresAt } from './key-expiry.mjs';
+import { normalizeTokenLimits } from './token-usage.mjs';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -56,9 +57,11 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
         const key = normalizeSecret(body.upstreamApiKey, '上游 API Key');
         if (key !== null) group.upstreamApiKey = key;
       }
-      for (const value of body.virtualApiKeys ?? []) addAccessKey(group, 'virtualApiKeys', value, label);
+      for (const value of body.virtualApiKeys ?? []) addAccessKey(group, 'virtualApiKeys', value, label, body.expiresAt, body.tokenLimits);
       for (const value of body.apiKeys ?? []) addAccessKey(group, 'apiKeys', value, '直通 Key');
-      if (!keyCount(group)) generatedKey = addGeneratedVirtualKey(group, label);
+      if (!keyCount(group)) generatedKey = addGeneratedVirtualKey(group, label, body.expiresAt, body.tokenLimits);
+      if (!group.virtualApiKeys.length && Object.hasOwn(body, 'expiresAt')) throw httpError(400, 'MR Expires at 仅适用于 MR 虚拟 Key');
+      if (!group.virtualApiKeys.length && Object.hasOwn(body, 'tokenLimits')) throw httpError(400, 'Token 限额仅适用于 MR 虚拟 Key');
       raw.groups.push(group);
       return true;
     }, { label: 'group.create' });
@@ -144,8 +147,10 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
           if (!keyCount(clone)) {
             const hasKey = clone.upstreamApiKey || (clone.models ?? []).every(model => PROTOCOLS.some(protocol => (model.routes?.[protocol] ?? clone.routes?.[protocol])?.upstreamApiKey));
             if (!hasKey) throw httpError(409, '源分组没有可复用的上游 Key；请先为克隆分组添加直通 Key');
-            addGeneratedVirtualKey(clone, '克隆默认密钥');
+            addGeneratedVirtualKey(clone, '克隆默认密钥', body.expiresAt, body.tokenLimits);
           }
+          if (!clone.virtualApiKeys.length && Object.hasOwn(body, 'expiresAt')) throw httpError(400, 'MR Expires at 仅适用于 MR 虚拟 Key');
+          if (!clone.virtualApiKeys.length && Object.hasOwn(body, 'tokenLimits')) throw httpError(400, 'Token 限额仅适用于 MR 虚拟 Key');
           raw.groups.push(clone);
           return true;
         }, { label: 'group.clone' });
@@ -182,12 +187,10 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
           const group = groupById(raw, id);
           group.virtualApiKeys ??= [];
           const value = body.key === undefined || body.key === null || body.key === '' ? null : normalizeSecret(body.key, '虚拟 Key');
-          if (value === null) newKey = addGeneratedVirtualKey(group, assertLabel(body.label) || '新密钥');
+          if (value === null) newKey = addGeneratedVirtualKey(group, assertLabel(body.label) || '新密钥', body.expiresAt, body.tokenLimits);
           else {
             if (typeof value === 'string') newKey = value;
-            group.virtualApiKeys.push(value);
-            if (typeof value === 'string') recordKeyMeta(group, 'virtualApiKeys', value, assertLabel(body.label));
-            else if (process.env[value.env]) recordKeyMeta(group, 'virtualApiKeys', process.env[value.env], assertLabel(body.label));
+            addAccessKey(group, 'virtualApiKeys', value, assertLabel(body.label), body.expiresAt, body.tokenLimits);
           }
           return true;
         }, { label: 'key.create' });
@@ -197,6 +200,8 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
       }
       if (parts[3] === 'api-keys' && method === 'POST') {
         const body = await readJson(req);
+        if (Object.hasOwn(body, 'tokenLimits')) throw httpError(400, 'Token 限额仅适用于 MR 虚拟 Key');
+        if (Object.hasOwn(body, 'expiresAt')) throw httpError(400, 'MR Expires at 仅适用于 MR 虚拟 Key');
         const result = await store.update((raw) => {
           const group = groupById(raw, id);
           addAccessKey(group, 'apiKeys', body.key, assertLabel(body.label) || '直通 Key');
@@ -302,6 +307,12 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
             return true;
           }
           if (Object.hasOwn(body, 'label')) setKeyLabel(group, 'virtualApiKeys', keyId, assertLabel(body.label));
+          if (Object.hasOwn(body, 'tokenLimits')) {
+            normalizeTokenLimits(body.tokenLimits);
+            group.virtualKeyMeta ??= {};
+            const meta = group.virtualKeyMeta[keyId] ??= {};
+            meta.tokenLimits = normalizeTokenLimits({ ...normalizeTokenLimits(meta.tokenLimits), ...body.tokenLimits });
+          }
           if (Object.hasOwn(body, 'expiresAt')) {
             const expiresAt = normalizeMRExpiresAt(body.expiresAt);
             group.virtualKeyMeta ??= {};
@@ -316,6 +327,7 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
       if (parts[3] === 'api-keys' && (method === 'PATCH' || method === 'DELETE')) {
         const keyId = parts[4];
         const body = method === 'PATCH' ? await readJson(req) : {};
+        if (Object.hasOwn(body, 'tokenLimits')) throw httpError(400, 'Token 限额仅适用于 MR 虚拟 Key');
         if (Object.hasOwn(body, 'expiresAt')) throw httpError(400, 'MR Expires at 仅适用于 MR 虚拟 Key');
         const result = await store.update((raw, before) => {
           const group = groupById(raw, id);
@@ -347,12 +359,15 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
         if (isObject(found.entry) && typeof found.entry.env === 'string') throw httpError(409, '环境变量 Key 不能在此轮换，请更新环境变量');
         const label = group.virtualKeyMeta?.[keyId]?.label ?? '轮换密钥';
         const expiresAt = normalizeMRExpiresAt(group.virtualKeyMeta?.[keyId]?.expiresAt);
+        const tokenLimits = normalizeTokenLimits(group.virtualKeyMeta?.[keyId]?.tokenLimits);
+        const tokenUsageId = group.virtualKeyMeta?.[keyId]?.tokenUsageId ?? createHash('sha256').update(found.resolved).digest('hex');
         newKey = 'mr-' + randomBytes(32).toString('hex');
         group.virtualApiKeys[found.index] = newKey;
         removeKeyMeta(group, 'virtualApiKeys', keyId);
         recordKeyMeta(group, 'virtualApiKeys', newKey, label);
         const newKeyId = createHash('sha256').update(newKey).digest('hex').slice(0, 16);
         group.virtualKeyMeta[newKeyId].expiresAt = expiresAt;
+        Object.assign(group.virtualKeyMeta[newKeyId], { tokenLimits, tokenUsageId });
         return true;
       }, { label: 'key.rotate' });
       auditEvent('key.rotate', id + '/virtual/' + keyId, true);
