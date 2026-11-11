@@ -188,6 +188,7 @@ async function deleteKey(groupId, keyId, source) {
   toast('访问密钥已删除');
 }
 async function rotateKey(groupId, keyId) {
+  const session = app.csrf;
   const ok = await confirmModal({
     title: '轮换虚拟 Key',
     message: '将立即生成新的 mr- Key，旧 Key 立刻失效。已配置旧 Key 的客户端需要更新。',
@@ -199,7 +200,7 @@ async function rotateKey(groupId, keyId) {
   await loadState();
   const group = findGroup(groupId);
   toast('虚拟 Key 已轮换');
-  if (result.key) openSecretModal(result.key, { label: '新的虚拟 Key', group: groupId, models: group ? group.models.map(function (model) { return model.id; }) : [] });
+  if (result.key) openSecretModal(result.key, { session, label: '新的虚拟 Key', group: groupId, models: group ? group.models.map(function (model) { return model.id; }) : [] });
 }
 function revealKey(keyId) {
   const key = findKey(keyId);
@@ -337,7 +338,7 @@ async function runCommand(command) {
   if (command === 'create-backup') return openBackupModal();
   if (command === 'reload') return reloadConfigAction();
   if (command === 'copy-endpoint') return copyEndpoint();
-  if (command === 'refresh') { await loadState({ silent: true }); toast('数据已刷新', 'info'); return; }
+  if (command === 'refresh') { if (await loadState({ silent: true }) !== false) toast('数据已刷新', 'info'); return; }
   if (command === 'logout') return logout();
   if (command.startsWith('group:')) return navigate('#/groups/' + encodeURIComponent(command.slice(6)) + '/overview');
 }
@@ -374,7 +375,7 @@ async function runAction(action, element, event) {
   }
   if (action === 'copy-endpoint') { await copyEndpoint(); return; }
   if (action === 'logout') { await logout(); return; }
-  if (action === 'refresh') { await loadState({ silent: true }); toast('数据已刷新', 'info'); return; }
+  if (action === 'refresh') { if (await loadState({ silent: true }) !== false) toast('数据已刷新', 'info'); return; }
   if (action === 'filter-protocol') {
     app.protocolFilter = element.dataset.protocol || 'all';
     $$('.filter-chip').forEach(function (chip) { chip.classList.toggle('active', chip.dataset.protocol === app.protocolFilter); });

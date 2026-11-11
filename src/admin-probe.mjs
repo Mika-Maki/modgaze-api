@@ -26,7 +26,7 @@ async function readLimited(response, limit) {
 
 export function createGroupTest({ store }) {
   return async function groupTest(body) {
-    const snapshot = await store.read();
+    const snapshot = await store.readVersioned();
     const target = body.id ? groupById(snapshot.raw, body.id) : null;
     if (!target) throw httpError(400, '缺少分组 ID');
     const resolvedGroup = resolvedGroupById(snapshot.resolved, target.id) ?? target;

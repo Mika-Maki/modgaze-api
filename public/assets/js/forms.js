@@ -104,10 +104,11 @@ export async function handleSubmit(event) {
   if (!form) return;
   event.preventDefault();
   const kind = form.dataset.form;
+  const session = app.csrf;
   const fd = new FormData(form);
   if (kind === 'auth-login') {
     await withForm(form, async () => {
-      const password = value(fd, 'password');
+      const password = String(fd.get('password') || '');
       if (!password) throw new Error('请输入管理员密码');
       const result = await api('/api/auth/login', { method: 'POST', body: { password }, csrf: false });
       app.csrf = result.csrfToken;
@@ -152,10 +153,10 @@ export async function handleSubmit(event) {
       };
       const result = await api('/api/groups', { method: 'POST', body });
       closeModal();
-      await loadState();
-      navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');
+      const refreshed = await loadState({ renderPage: false });
+      if (refreshed !== false) navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');
       toast('分组已创建');
-      if (result.generatedKey) openSecretModal(result.generatedKey, { label: '分组虚拟 Key', group: result.group.id, models: result.group.models.map(model => model.id) });
+      if (result.generatedKey) openSecretModal(result.generatedKey, { session, label: '分组虚拟 Key', group: result.group.id, models: result.group.models.map(model => model.id) });
     });
     return;
   }
@@ -170,8 +171,8 @@ export async function handleSubmit(event) {
       if (!body.newId) throw new Error('分组 ID 不能为空');
       const result = await api('/api/groups/' + encodeURIComponent(id), { method: 'PATCH', body });
       closeModal();
-      await loadState();
-      navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');
+      const refreshed = await loadState({ renderPage: false });
+      if (refreshed !== false) navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');
       toast('分组信息已保存');
     });
     return;
@@ -304,7 +305,7 @@ export async function handleSubmit(event) {
       toast('虚拟 Key 已创建');
       if (result.key) {
         const group = findGroup(groupId);
-        openSecretModal(result.key, { label: '虚拟 Key 已创建', group: groupId, models: group ? group.models.map(model => model.id) : [] });
+        openSecretModal(result.key, { session, label: '虚拟 Key 已创建', group: groupId, models: group ? group.models.map(model => model.id) : [] });
       }
     });
     return;
@@ -341,11 +342,11 @@ export async function handleSubmit(event) {
       const groupId = form.dataset.group;
       const result = await api('/api/groups/' + encodeURIComponent(groupId) + '/clone', { method: 'POST', body: { id: value(fd, 'id'), name: value(fd, 'name') } });
       closeModal();
-      await loadState();
-      navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');
+      const refreshed = await loadState({ renderPage: false });
+      if (refreshed !== false) navigate('#/groups/' + encodeURIComponent(result.group.id) + '/overview');
       toast('分组已克隆');
       const virtual = result.group.virtualKeys?.[0];
-      if (virtual?.value) openSecretModal(virtual.value, { label: '克隆分组的虚拟 Key', group: result.group.id, models: result.group.models.map(model => model.id) });
+      if (virtual?.value) openSecretModal(virtual.value, { session, label: '克隆分组的虚拟 Key', group: result.group.id, models: result.group.models.map(model => model.id) });
     });
     return;
   }

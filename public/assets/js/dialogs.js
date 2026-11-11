@@ -246,8 +246,8 @@ function passwordPrompt(options) {
 }
 
 function openSecretModal(key, options) {
-  app.modalSecret = key;
   const opts = options || {};
+  if (!app.authenticated || (Object.hasOwn(opts, 'session') && opts.session !== app.csrf)) return;
   const label = opts.label || '新密钥';
   openModal({
     title: label, subtitle: '请复制并保存到你的客户端配置中。密钥不会再次通过创建接口返回。', icon: 'key',
@@ -256,6 +256,8 @@ function openSecretModal(key, options) {
       '<div class="warning-box mt-3">' + icon('alert') + '<span>这是可直接访问本机路由的凭证，请只交给可信客户端。丢失后可在「本地密钥」里轮换或删除。</span></div>',
     footer: '<button class="btn btn-primary" data-action="close-modal">完成</button>',
   });
+  // openModal first closes the previous dialog, which clears modalSecret.
+  app.modalSecret = key;
 }
 
 export { openCommandPalette, renderCommandList, focusCommand, nextGroupId, openCreateGroupModal, openEditGroupModal, openRouteModal, openModelModal, openBulkModelsModal, groupSelectOptions, openVirtualKeyModal, openApiKeyModal, openKeyLabelModal, openCloneModal, openBackupModal, openSecretModal, passwordPrompt };

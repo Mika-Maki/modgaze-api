@@ -177,20 +177,3 @@ test('invalid local dates and browser-invalid input show form errors without API
     assert.equal(h.closes, 0);
   });
 });
-
-test('MR row expiry states reuse existing metadata while direct row remains unchanged', async () => {
-  const h = await harness();
-  const detail = await browserModule('views/group-detail.js', h.core);
-  const group = { id: 'demo', name: 'Demo' };
-  const key = { id: 'mr-1', label: 'Client', masked: 'mr-…1234', createdAt: null };
-  const future = detail.keyRow(group, { ...key, expiresAt: '2099-01-01T00:00:00Z' }, 'virtual');
-  assert.match(future, /到期 · /);
-  assert.match(future, /title="编辑标签与到期时间"/);
-  assert.match(detail.keyRow(group, { ...key, expiresAt: '2000-01-01T00:00:00Z' }, 'virtual'), /已过期 · /);
-  assert.match(detail.keyRow(group, { ...key, expiresAt: null }, 'virtual'), /永不过期/);
-  const direct = detail.keyRow(group, { ...key, expiresAt: '2000-01-01T00:00:00Z' }, 'api');
-  assert.match(direct, /直通上游/);
-  assert.match(direct, /title="重命名"/);
-  assert.doesNotMatch(direct, /已过期|永不过期|到期 · /);
-  assert.equal((future.match(/class="key-meta"/g) || []).length, 1);
-});

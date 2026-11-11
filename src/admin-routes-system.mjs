@@ -34,7 +34,7 @@ export function createSystemRoutes(context) {
       }
       if (parts[1] === 'backups' && method === 'GET') { sendJson(res, 200, { ok: true, backups: await store.listBackups() }); return true; }
       if (parts[1] === 'settings' && method === 'GET') {
-        const snapshot = await store.read();
+        const snapshot = await store.readVersioned();
         sendJson(res, 200, { ok: true, settings: sanitizeSettings(snapshot.raw, snapshot.compiled, runtimeInfo()), summary: snapshot.summary });
         return true;
       }
@@ -44,17 +44,6 @@ export function createSystemRoutes(context) {
       metrics.reset();
       auditEvent('stats.reset', 'metrics', true);
       sendJson(res, 200, { ok: true, stats: metrics.snapshot() });
-      return true;
-    }
-
-    if (parts[1] === 'groups') {
-      if (parts.length === 2) return await handleGroupCollection(req, res);
-      return await handleGroups(req, res, parts, url);
-    }
-    if (parts[1] === 'test' && parts[2] === 'router' && method === 'POST' && parts.length === 3) {
-      const body = await readJson(req);
-      const result = await routerTest(body);
-      sendJson(res, 200, { ok: true, result });
       return true;
     }
 
@@ -130,13 +119,12 @@ export function createSystemRoutes(context) {
         if (body.dryRun === true) { sendJson(res, 200, { ok: true, dryRun: true, summary: validated.summary, warnings }); return true; }
         const result = await store.replace(config, { label: 'import' });
         auditEvent('config.import', 'config/local.json', true);
-        const restart = restartRequired(result.before, result, Number.isInteger(result.before.raw.adminPort) ? result.before.raw.adminPort : currentAdminPort(), Number.isInteger(result.raw.adminPort) ? result.raw.adminPort : currentAdminPort());
+        const restart = restartRequired(result.before, result, Number.isInteger(result.before?.raw.adminPort) ? result.before.raw.adminPort : currentAdminPort(), Number.isInteger(result.raw.adminPort) ? result.raw.adminPort : currentAdminPort());
         sendJson(res, 200, { ok: true, summary: result.summary, backup: result.backup, warnings, restartRequired: restart });
         return true;
       }
       if (parts[2] === 'reload' && method === 'POST' && parts.length === 3) {
-        const snapshot = await store.read();
-        await store.reload(snapshot.resolved);
+        const snapshot = await store.reloadCurrent();
         auditEvent('config.reload', 'config/local.json', true);
         sendJson(res, 200, { ok: true, summary: snapshot.summary, warnings: configWarnings(snapshot.raw, snapshot.compiled) });
         return true;
@@ -149,7 +137,7 @@ export function createSystemRoutes(context) {
             error.code = 'step_up_required';
             throw error;
           }
-          const snapshot = await store.read();
+          const snapshot = await store.readVersioned();
           const config = redactedConfig(snapshot.raw);
           if (url.searchParams.get('download') === '1') {
             sendText(res, 200, JSON.stringify(config, null, 2) + '\n', 'application/json; charset=utf-8', {
@@ -173,7 +161,7 @@ export function createSystemRoutes(context) {
             auditEvent('config.export_denied', body.mode, false);
             throw httpError(401, '管理员密码错误');
           }
-          const snapshot = await store.read();
+          const snapshot = await store.readVersioned();
           const config = body.mode === 'raw' ? structuredClone(snapshot.raw) : redactedConfig(snapshot.raw);
           auditEvent('config.export', body.mode, true);
           sendJson(res, 200, { ok: true, redacted: body.mode === 'redacted', config });

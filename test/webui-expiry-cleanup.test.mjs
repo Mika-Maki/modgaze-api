@@ -8,7 +8,7 @@ test('stats revision reloads deleted keys into WebUI without overwriting an open
   const app = { authenticated: true, data: { configRevision: 0, groups: [{ virtualKeys: ['synthetic'] }] }, modal: null, pollStatsInFlight: false, pollStatsRetryAt: 0, adminRetryAt: 0 };
   let stateReads = 0, renders = 0;
   const { pollStats } = vm.runInNewContext(source.replace(/^import.*$/gm, '').replace(/export \{[^}]*\};/g, '') + '\n;({pollStats});', {
-    app, document: { hidden: false }, setInterval, clearInterval,
+    app, document: { hidden: false }, $$: () => [], setInterval, clearInterval,
     api: async path => path === '/api/stats' ? { configRevision: 1, stats: {} } : (stateReads++, { configRevision: 1, groups: [{ virtualKeys: [] }], stats: {} }),
     render: () => renders++, hideOffline() {}, updateLiveStats() {}, updateChrome() {},
     renderLoading() {}, showOffline() {}, renderFatal() {},

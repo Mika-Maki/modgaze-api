@@ -90,35 +90,44 @@ function idScanner(onId, sse) {
 }
 
 export function createResponseObserver(contentType, onId) {
-  const sse = /^text\/event-stream(?:;|$)/i.test(contentType);
-  const json = /^(?:application\/(?:[a-z0-9.+-]+\+)?json)(?:;|$)/i.test(contentType);
+  const type = typeof contentType === 'string' ? contentType.trim() : '';
+  const sse = /^text\/event-stream(?:[ \t]*;|$)/i.test(type);
+  const json = /^(?:application\/(?:[a-z0-9.+-]+\+)?json)(?:[ \t]*;|$)/i.test(type);
   const decoder = new StringDecoder('utf8');
   let scan = idScanner(onId, sse);
-  let prefix = '', mode = 'prefix';
+  let prefix = '', mode = 'prefix', afterCR = false;
+  function fragment(part) {
+    let used = 0;
+    while (used < part.length && mode === 'prefix') {
+      prefix += part[used++];
+      if (prefix === 'data:') mode = 'data';
+      else if (!'data:'.startsWith(prefix)) mode = 'skip';
+    }
+    if (mode === 'data') scan(part.slice(used));
+  }
+  function endLine() {
+    if (mode === 'prefix' && prefix === '') scan = idScanner(onId, true);
+    else if (mode === 'data' || (mode === 'prefix' && prefix === 'data')) scan('\n');
+    mode = 'prefix'; prefix = '';
+  }
   function observe(text) {
     if (!sse) { if (json) scan(text); return; }
     // Stream each data line directly into its event scanner. Even a single
     // enormous SSE line cannot create an unbounded line/event buffer.
     let start = 0;
-    while (start < text.length) {
-      const newline = text.indexOf('\n', start);
-      const end = newline < 0 ? text.length : newline;
-      let part = text.slice(start, end);
-      if (mode === 'prefix') {
-        let used = 0;
-        while (used < part.length && mode === 'prefix') {
-          prefix += part[used++];
-          if (prefix === 'data:') mode = 'data';
-          else if (!'data:'.startsWith(prefix) && prefix !== '\r') mode = 'skip';
-        }
-        part = part.slice(used);
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index];
+      if (afterCR) {
+        afterCR = false;
+        if (char === '\n') { start = index + 1; continue; }
       }
-      if (mode === 'data') scan(part);
-      if (newline < 0) return;
-      if (mode === 'prefix' && (prefix === '' || prefix === '\r')) scan = idScanner(onId, true);
-      else if (mode === 'data') scan('\n');
-      mode = 'prefix'; prefix = ''; start = end + 1;
+      if (char !== '\r' && char !== '\n') continue;
+      fragment(text.slice(start, index));
+      endLine();
+      afterCR = char === '\r';
+      start = index + 1;
     }
+    fragment(text.slice(start));
   }
   return new Transform({
     transform(chunk, encoding, callback) {

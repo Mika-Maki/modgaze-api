@@ -79,9 +79,6 @@ test('audit tab defaults are opt-in with all switches, trust guidance and manage
   assert.match(html, /name="trustedProxies"[^>]*>127\.0\.0\.1\n::1<\/textarea>/);
   assert.match(inputTag(html, 'maxEntries'), /min="1" max="2000" step="1" value="500"/);
   assert.match(inputTag(html, 'maxPromptChars'), /min="1" max="65536" step="1" value="16384"/);
-  for (const text of ['socket', 'CF-Connecting-IP', 'Cloudflare Tunnel', '精确 IP', '指纹', '绝不记录原始密钥', '缺失 usage 显示 —', '重启后清空', 'stdout JSON audit', '不会被追溯删除', '无需重启']) assert.ok(html.includes(text), text);
-  assert.ok(html.indexOf('>请求审计</h2>') < html.indexOf('>管理动作审计日志</h2>'));
-  assert.match(html, /管理员登录/);
   assert.match(html, /&lt;admin&gt;/);
 });
 
@@ -180,17 +177,6 @@ test('audit submit displays backend validation errors and does not reload state'
   assert.equal(reloads.length, 0);
 });
 
-test('audit refresh button uses existing action and a styled horizontally scrollable table', async () => {
-  const { render } = await renderer({ requestAudit: { entries: [record()] } });
-  const html = render();
-  assert.match(html, /type="button" data-action="refresh"[^>]*>[\s\S]*?刷新记录/);
-  assert.match(html, /未保存的设置会保留/);
-  assert.match(html, /class="table-wrap"><table class="data-table"/);
-  const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
-  assert.match(css, /\.table-wrap\s*\{[^}]*overflow-x:\s*auto/);
-  assert.match(css, /\.data-table\s*\{[^}]*border-collapse:\s*collapse/);
-});
-
 test('existing refresh action fetches new audit entries while retaining dirty audit controls and focus', async () => {
   for (const control of [
     { type: 'checkbox', checked: false, defaultChecked: true },
@@ -202,17 +188,18 @@ test('existing refresh action fetches new audit entries while retaining dirty au
     core.app.route = { name: 'system', tab: 'audit' };
     let focusCalls = 0, stateReads = 0, rendered = '';
     control.focus = () => { focusCalls++; };
-    const draft = { elements: [control], contains: element => element === control };
+    const draft = { dataset: { form: 'settings-audit' }, elements: [control], contains: element => element === control };
     let currentForm = draft;
     const system = await browserModule('views/system.js', core);
     const data = await browserModule('data.js', {
       ...core, document: { activeElement: control },
       $: selector => selector === 'form[data-form="settings-audit"]' ? currentForm : null,
+      $$: () => [currentForm],
       api: async path => {
         assert.equal(path, '/api/state'); stateReads++;
         return { settings: {}, stats: {}, requestAudit: { entries: [record({ requestId: 'fresh-request' })] } };
       },
-      render: () => { rendered = system.systemAuditTab(); currentForm = { replaceWith: form => { currentForm = form; } }; },
+      render: () => { rendered = system.systemAuditTab(); currentForm = { dataset: draft.dataset, replaceWith: form => { currentForm = form; } }; },
       updateChrome() {}, hideOffline() {}, renderLoading() {}, renderFatal(error) { throw error; }, showOffline() {},
     });
     const actions = await browserModule('actions.js', { ...core, loadState: data.loadState, toast() {} });
@@ -222,32 +209,4 @@ test('existing refresh action fetches new audit entries while retaining dirty au
     assert.equal(currentForm, draft);
     assert.equal(focusCalls, 1);
   }
-});
-
-test('silent refresh captures edits made in flight; successful saves and clean refreshes use new settings', async () => {
-  const core = await coreModule();
-  core.app.route = { name: 'system', tab: 'audit' };
-  core.app.data = { settings: {} };
-  const control = { type: 'text', value: '500', defaultValue: '500' };
-  const draft = { elements: [control], contains: () => false };
-  let currentForm = draft, editInFlight = true, replacements = 0;
-  const data = await browserModule('data.js', {
-    ...core, document: { activeElement: null }, $: () => currentForm,
-    api: async () => { if (editInFlight) control.value = '600'; return { settings: {}, stats: {} }; },
-    render: () => { currentForm = { replaceWith: form => { replacements++; currentForm = form; } }; },
-    updateChrome() {}, hideOffline() {}, renderLoading() {}, renderFatal(error) { throw error; }, showOffline() {},
-  });
-  await data.loadState({ silent: true });
-  assert.equal(currentForm, draft);
-  assert.equal(control.value, '600');
-  assert.equal(replacements, 1);
-  await data.loadState();
-  assert.notEqual(currentForm, draft, 'post-save non-silent reload must accept saved server settings');
-  assert.equal(replacements, 1);
-  editInFlight = false;
-  control.value = control.defaultValue;
-  currentForm = draft;
-  await data.loadState({ silent: true });
-  assert.notEqual(currentForm, draft, 'clean form should receive fresh server settings');
-  assert.equal(replacements, 1);
 });

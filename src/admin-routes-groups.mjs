@@ -16,7 +16,7 @@ const isObject = value => value !== null && typeof value === 'object' && !Array.
 export function createGroupRoutes({ store, readJson, sendJson, auditEvent, groupPayload, groupTest }) {
   async function handleGroupCollection(req, res) {
     if (req.method === 'GET') {
-      const snapshot = await store.read();
+      const snapshot = await store.readVersioned();
       const groups = snapshot.raw.groups.map(rawGroup => sanitizeGroup(rawGroup, resolvedGroupById(snapshot.resolved, rawGroup.id) ?? rawGroup));
       sendJson(res, 200, { ok: true, summary: snapshot.summary, groups });
       return;
@@ -231,7 +231,7 @@ export function createGroupRoutes({ store, readJson, sendJson, auditEvent, group
         }, { label: 'model.bulk' });
         auditEvent('model.bulk', id, true, '新增 ' + added.length + ' 个模型');
         if (result.unchanged) {
-          const snapshot = await store.read();
+          const snapshot = result.before;
           sendJson(res, 200, { ok: true, unchanged: true, added, skipped, summary: snapshot.summary, groups: sanitizeGroup(groupById(snapshot.raw, id), resolvedGroupById(snapshot.resolved, id) ?? groupById(snapshot.raw, id)) });
           return;
         }

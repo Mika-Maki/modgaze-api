@@ -256,7 +256,7 @@ export async function createAdmin(options = {}) {
   }
 
   async function statePayload() {
-    const snapshot = await store.read();
+    const snapshot = await store.readVersioned();
     const groups = snapshot.raw.groups.map(rawGroup => sanitizeGroup(rawGroup, resolvedGroupById(snapshot.resolved, rawGroup.id) ?? rawGroup));
     const service = await serviceStatus();
     const backups = await store.listBackups();
@@ -266,7 +266,7 @@ export async function createAdmin(options = {}) {
       ok: true,
       now: Date.now(),
       version: PACKAGE.version,
-      configRevision: store.revision,
+      configRevision: snapshot.revision,
       runtime,
       service,
       settings: sanitizeSettings(snapshot.raw, snapshot.compiled, runtime),
@@ -286,7 +286,8 @@ export async function createAdmin(options = {}) {
 
   function restartRequired(before, after, adminBefore, adminAfter) {
     const fields = [];
-    if (before.compiled.host !== after.compiled.host || before.compiled.port !== after.compiled.port) fields.push('路由监听地址');
+    const previous = before?.compiled ?? initialSnapshot.compiled;
+    if (previous.host !== after.compiled.host || previous.port !== after.compiled.port) fields.push('路由监听地址');
     if (adminBefore !== adminAfter) fields.push('管理台端口');
     return fields;
   }
@@ -470,7 +471,10 @@ export async function createAdmin(options = {}) {
   const serveStatic = createStaticHandler({ publicDir, version: PACKAGE.version, currentAdminPort });
 
   function handleError(res, error) {
-    if (res.headersSent || res.writableEnded) { res.destroy(); return; }
+    // end() may still have buffered bytes to flush. A later error must not
+    // truncate a complete response that has already been handed to HTTP.
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.destroy(); return; }
     let status;
     let message;
     let detail = null;

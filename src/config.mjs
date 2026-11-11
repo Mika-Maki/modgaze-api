@@ -9,18 +9,24 @@ const isEnvRef = value => isObject(value) && typeof value.env === 'string' && !O
 
 // Open first, then check the same inode. O_NOFOLLOW rejects planted symlinks
 // without a check/use race on the final path component.
-async function readPrivateFile(path, label) {
+async function readPrivateFile(path, label, encoding = 'utf8') {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new Error(label + ' must be a regular file');
     if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error(label + ' must have mode 0600');
-    return await handle.readFile('utf8');
+    return await handle.readFile(encoding);
   } finally { await handle.close(); }
 }
 
 export async function readRawConfig(path) {
   return JSON.parse(await readPrivateFile(path, 'Config'));
+}
+
+// Recovery needs the original bytes even when they are not valid JSON. Keep
+// the same private-file checks as normal configuration reads.
+export async function readConfigBytes(path) {
+  return await readPrivateFile(path, 'Config', null);
 }
 
 export function resolveSecretValue(value) {
@@ -76,12 +82,16 @@ export function configSummary(compiled) {
 }
 
 export async function atomicWriteConfig(path, value) {
+  return await atomicWriteConfigBytes(path, JSON.stringify(value, null, 2) + '\n');
+}
+
+export async function atomicWriteConfigBytes(path, bytes) {
   const directory = dirname(path);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = join(directory, '.' + basename(path) + '.' + randomBytes(8).toString('hex') + '.tmp');
   const handle = await open(temporary, 'wx', 0o600);
   try {
-    await handle.writeFile(JSON.stringify(value, null, 2) + '\n', 'utf8');
+    await handle.writeFile(bytes);
     await handle.sync();
   } finally {
     await handle.close();

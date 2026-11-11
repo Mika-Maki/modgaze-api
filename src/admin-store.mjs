@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  atomicWriteConfig, createBackup, listBackups, readBackup, removeBackup, readRawConfig, validateConfig,
+  atomicWriteConfig, atomicWriteConfigBytes, createBackup, listBackups, readBackup, removeBackup, readRawConfig, readConfigBytes, validateConfig,
 } from './config.mjs';
 import { PROTOCOLS } from './router.mjs';
 import { normalizeGroupRateLimits, normalizeRateLimits } from './rate-limit.mjs';
@@ -387,12 +387,33 @@ export class ConfigStore {
     this.reload = reload;
     this.chain = Promise.resolve();
     this.revision = 0;
+    this.lastApplied = null;
   }
 
   async read() {
     const raw = await readRawConfig(this.configPath);
     const validated = validateConfig(raw);
-    return { raw, resolved: validated.resolved, compiled: validated.compiled, summary: validated.summary };
+    const snapshot = { raw, resolved: validated.resolved, compiled: validated.compiled, summary: validated.summary };
+    // The first read initializes the running configuration. Later disk reads
+    // may contain external edits that have not been applied to the router.
+    this.lastApplied ??= structuredClone(snapshot);
+    return snapshot;
+  }
+
+  readVersioned() {
+    // Wait for writes (including reload/rollback) and capture the revision in
+    // the same queue slot as the configuration it describes.
+    return this.enqueue(async () => ({ ...await this.read(), revision: this.revision }));
+  }
+
+  reloadCurrent() {
+    return this.enqueue(async () => {
+      const snapshot = await this.read();
+      await this.reload(snapshot.resolved);
+      this.lastApplied = structuredClone(snapshot);
+      this.revision += 1;
+      return { ...snapshot, revision: this.revision };
+    });
   }
 
   enqueue(task) {
@@ -401,7 +422,7 @@ export class ConfigStore {
     return next;
   }
 
-  async apply(raw, before, label) {
+  async apply(raw, before, label, previousBytes) {
     if (raw.adminPort !== undefined && (!Number.isSafeInteger(raw.adminPort) || raw.adminPort < 1 || raw.adminPort > 65535)) {
       throw httpError(400, '管理台端口必须在 1-65535 之间');
     }
@@ -417,10 +438,17 @@ export class ConfigStore {
     try {
       await this.reload(resolved);
     } catch (error) {
-      await atomicWriteConfig(this.configPath, before.raw).catch(() => {});
-      await Promise.resolve(this.reload(before.resolved)).catch(() => {});
-      throw httpError(500, '配置已回滚：路由热重载失败');
+      let rolledBack = true;
+      try {
+        if (previousBytes !== undefined) await atomicWriteConfigBytes(this.configPath, previousBytes);
+        else await atomicWriteConfig(this.configPath, before.raw);
+      } catch { rolledBack = false; }
+      if (before) {
+        try { await this.reload(before.resolved); } catch { rolledBack = false; }
+      }
+      throw httpError(500, rolledBack ? '配置已回滚：路由热重载失败' : '路由热重载失败，配置回滚未完成，请在本机检查备份与服务状态');
     }
+    this.lastApplied = structuredClone({ raw, resolved, compiled, summary });
     this.revision += 1;
     return { raw, resolved, compiled, summary, backup };
   }
@@ -463,14 +491,21 @@ export class ConfigStore {
 
   replace(raw, { label = 'replace' } = {}) {
     return this.enqueue(async () => {
-      const before = await this.read();
-      const saved = await this.apply(raw, before, label);
+      // IO, permissions and symlink errors must still fail closed. Only parsing
+      // and validation may fall back to the last applied configuration.
+      const previousBytes = await readConfigBytes(this.configPath);
+      let before;
+      try {
+        const previousRaw = JSON.parse(previousBytes.toString('utf8'));
+        before = { raw: previousRaw, ...validateConfig(previousRaw) };
+      } catch { before = this.lastApplied; }
+      const saved = await this.apply(raw, before, label, previousBytes);
       return { ...saved, before };
     });
   }
 
   async snapshot() {
-    return await this.read();
+    return await this.readVersioned();
   }
 
   async listBackups() {
@@ -478,7 +513,7 @@ export class ConfigStore {
   }
 
   async createBackup(label = 'manual') {
-    return await createBackup(this.configPath, this.backupDir, { label });
+    return await this.enqueue(() => createBackup(this.configPath, this.backupDir, { label }));
   }
 
   async readBackup(name) {

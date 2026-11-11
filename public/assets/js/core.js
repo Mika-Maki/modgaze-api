@@ -156,6 +156,7 @@ function retryAfterSeconds(raw) {
   return Number.isFinite(timestamp) ? Math.max(0, (timestamp - Date.now()) / 1000) : null;
 }
 async function api(path, { method = 'GET', body, csrf = true } = {}) {
+  const session = app.csrf;
   const headers = { accept: 'application/json' };
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (csrf && method !== 'GET' && app.csrf) headers['x-csrf-token'] = app.csrf;
@@ -169,6 +170,11 @@ async function api(path, { method = 'GET', body, csrf = true } = {}) {
   }
   let payload = null;
   try { payload = await response.json(); } catch {}
+  if (!path.startsWith('/api/auth/') && session !== app.csrf) {
+    const error = new Error('登录会话已变更，请重新执行操作');
+    error.code = 'stale_session';
+    throw error;
+  }
   if (!response.ok) {
     const error = new Error(payload?.error?.message || '请求失败（HTTP ' + response.status + '）');
     error.status = response.status;
@@ -181,7 +187,16 @@ async function api(path, { method = 'GET', body, csrf = true } = {}) {
       const seconds = error.retryAfter ?? 4;
       app.adminRetryAt = Math.max(app.adminRetryAt, Date.now() + Math.max(1, seconds) * 1000);
     }
-    if (response.status === 401 && app.authenticated && unauthorizedHandler && !path.startsWith('/api/auth/')) unauthorizedHandler();
+    if (response.status === 401 && app.authenticated && app.csrf === session && unauthorizedHandler && !path.startsWith('/api/auth/')) unauthorizedHandler();
+    throw error;
+  }
+  // Every management API returns a JSON object. An empty or malformed success
+  // response must not become null state (or look like a successful mutation).
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    const error = new Error('管理服务返回了无效数据（' + path + '，HTTP ' + response.status + '），请重新加载。');
+    error.code = 'invalid_response';
+    error.status = response.status;
+    error.path = path;
     throw error;
   }
   return payload;

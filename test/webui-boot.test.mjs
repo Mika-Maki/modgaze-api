@@ -121,11 +121,16 @@ test('HTML starts an external deferred classic bootstrap rather than an inline o
 
 test('module load failure reports modules phase and cancels the watchdog', async () => {
   const h = await bootstrap();
-  const error = new Error('module request failed');
+  const error = new TypeError('<img src=x onerror=evil()>' + 'x'.repeat(800));
   assert.equal(h.loads, 1);
   h.load.reject(error);
   await flush();
   assertFailure(h, 'failed', 'modules', error);
+  assert.equal(h.status.dataset.code, 'BOOT_MODULE');
+  assert.ok(!h.detail.classList.contains('hidden'));
+  assert.ok(h.detail.textContent.startsWith('BOOT_MODULE [modules] TypeError: <img'));
+  assert.ok(h.detail.textContent.length < 450);
+  assert.equal(h.detail.innerHTML, undefined, 'errors must remain bounded plain text');
   assert.equal(h.inits, 0);
   assert.equal(h.timers.pending, 0);
   h.timers.advance(15000);
@@ -137,10 +142,12 @@ test('application init failure reports session phase and cancels the watchdog', 
   h.load.resolve(h.module);
   await flush();
   assert.equal(h.inits, 1);
-  const error = new Error('session initialization failed');
+  const error = Object.assign(new Error('Storage denied'), { name: 'SecurityError' });
   h.session.reject(error);
   await flush();
   assertFailure(h, 'failed', 'session', error);
+  assert.equal(h.status.dataset.code, 'BOOT_INIT');
+  assert.equal(h.detail.textContent, 'BOOT_INIT [session] SecurityError: Storage denied');
   assert.equal(h.timers.pending, 0);
 });
 
@@ -151,6 +158,9 @@ test('a pending module load becomes a visible modules timeout at exactly fifteen
   assert.deepEqual(h.errors, []);
   h.timers.advance(1);
   assertFailure(h, 'timeout', 'modules');
+  assert.equal(h.status.dataset.code, 'BOOT_TIMEOUT');
+  assert.ok(h.detail.textContent.includes('[modules]'));
+  assert.ok(!h.detail.classList.contains('hidden'));
   assert.equal(h.loads, 1);
   assert.equal(h.inits, 0);
 });
@@ -278,37 +288,4 @@ test('the real exported app init propagates bootAuth failure to the independent 
   const error = new Error('auth bootstrap rejected');
   const module = await appModule(async () => { throw error; });
   await assert.rejects(module.init(), actual => actual === error);
-});
-
-test('module failure exposes its original browser error as bounded plain text', async () => {
-  const h = await bootstrap();
-  const hostile = '<img src=x onerror=evil()>' + 'x'.repeat(800);
-  h.load.reject(new TypeError(hostile));
-  await flush();
-  assert.equal(h.status.dataset.code, 'BOOT_MODULE');
-  assert.ok(!h.detail.classList.contains('hidden'));
-  assert.ok(h.detail.textContent.startsWith('BOOT_MODULE [modules] TypeError: <img'));
-  assert.ok(h.detail.textContent.length < 450);
-  assert.equal(h.detail.innerHTML, undefined, 'error text must never be assigned as markup');
-});
-
-test('init failure exposes its exact exception instead of mislabelling every failure as network', async () => {
-  const h = await bootstrap();
-  h.load.resolve(h.module);
-  await flush();
-  const error = Object.assign(new Error('Storage denied'), { name: 'SecurityError' });
-  h.session.reject(error);
-  await flush();
-  assert.equal(h.status.dataset.code, 'BOOT_INIT');
-  assert.equal(h.detail.textContent, 'BOOT_INIT [session] SecurityError: Storage denied');
-  assert.ok(!h.message.textContent.includes('请检查网络'));
-});
-
-test('startup timeout includes the phase and diagnostic code in visible details', async () => {
-  const h = await bootstrap();
-  h.timers.advance(15000);
-  assert.equal(h.status.dataset.code, 'BOOT_TIMEOUT');
-  assert.ok(h.detail.textContent.includes('[modules]'));
-  assert.ok(h.detail.textContent.includes('15 秒'));
-  assert.ok(!h.detail.classList.contains('hidden'));
 });

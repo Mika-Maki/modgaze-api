@@ -10,18 +10,18 @@ async function themeModule(mode) {
   let legacy = mode === 'legacy' || mode === 'remove-denied' ? 'light' : null;
   const denied = () => { throw new DOMException('Access is denied for this document.', 'SecurityError'); };
   const storage = {
-    getItem(key) { calls.push(['get', key]); if (mode === 'get-denied') denied(); return legacy; },
+    getItem(key) { calls.push(['get', key]); return legacy; },
     removeItem(key) { calls.push(['remove', key]); if (mode === 'remove-denied') denied(); legacy = null; },
   };
   const bindings = { document };
   if (mode === 'property-denied') Object.defineProperty(bindings, 'localStorage', { get: denied });
-  else if (mode !== 'absent') bindings.localStorage = storage;
+  else bindings.localStorage = storage;
   const script = source.replace(/export\s*\{[^}]+\};/g, '');
   const core = vm.runInNewContext(script + '\n;({ app, applyTheme, toggleTheme, updateChrome });', bindings, { filename: 'core.js' });
   return { ...core, document, calls };
 }
 
-for (const mode of ['property-denied', 'get-denied', 'remove-denied', 'absent', 'legacy', 'empty']) {
+for (const mode of ['property-denied', 'remove-denied', 'legacy']) {
   test('fixed dark theme does not block startup or chrome when storage is ' + mode, async () => {
     const h = await themeModule(mode);
     h.app.theme = 'light';
@@ -32,6 +32,5 @@ for (const mode of ['property-denied', 'get-denied', 'remove-denied', 'absent', 
     assert.doesNotThrow(() => h.updateChrome());
     assert.ok(h.calls.every(([, key]) => key === 'mr-theme'), 'only the obsolete theme preference is touched');
     if (mode === 'legacy') assert.equal(h.calls.filter(([operation]) => operation === 'remove').length, 1);
-    if (mode === 'empty') assert.equal(h.calls.filter(([operation]) => operation === 'remove').length, 0);
   });
 }

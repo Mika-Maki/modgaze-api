@@ -1,7 +1,7 @@
 import { readFile, writeFile, rename, chmod } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { compileConfig } from '../src/router.mjs';
+import { validateConfig } from '../src/config.mjs';
 const path = fileURLToPath(new URL('../config/local.json', import.meta.url));
 const exportPath = fileURLToPath(new URL('../config/virtual-keys.private.json', import.meta.url));
 try {
@@ -13,7 +13,9 @@ try {
     }
     if (!group.virtualApiKeys?.length) group.virtualApiKeys = ['mr-' + randomBytes(32).toString('hex')];
   }
-  compileConfig(config);
+  // Resolve environment credentials for validation only; preserve references
+  // in the configuration and client export written below.
+  validateConfig(config);
   const temporary = path + '.virtual.tmp';
   await writeFile(temporary, JSON.stringify(config, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   await rename(temporary, path);

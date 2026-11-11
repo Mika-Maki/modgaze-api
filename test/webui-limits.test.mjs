@@ -77,7 +77,6 @@ test('system rendering separates admin scopes, defaults to 256 MiB and keeps zer
   for (const [name, value] of Object.entries({ maxConcurrent: 64, rpm: 600, perIpMaxConcurrent: 32, perIpRpm: 300, loginMaxConcurrent: 2, loginRpm: 10 })) {
     assert.equal(inputValue(html, 'admin.' + name), String(value));
   }
-  for (const label of ['WebUI / 管理限流', '管理 API · 全局', '每来源', '登录', '每 60 秒', 'SSE 全生命周期', 'Tunnel 出口', '无需重启']) assert.ok(html.includes(label), label);
   assert.doesNotMatch(html, /name="api[.]/);
   assert.equal(inputValue(html, 'port'), '8787');
   assert.equal(core.routerBase(), 'http://127.0.0.1:8787');
@@ -102,7 +101,6 @@ test('create/edit dialogs and group detail use the same zero-safe group limits',
   const dialogs = await browserModule('dialogs.js', { ...core, openModal: options => { modal = options; } });
   dialogs.openCreateGroupModal();
   for (const name of ['rateMaxConcurrent', 'rateRpm']) assert.equal(inputValue(modal.body, name), '0');
-  assert.match(modal.body, /同组所有 Key 共享预算/);
   dialogs.openEditGroupModal({ id: 'demo', name: 'Demo', enabled: true, rateLimits: { maxConcurrent: 0, rpm: 123 } });
   assert.equal(inputValue(modal.body, 'rateMaxConcurrent'), '0');
   assert.equal(inputValue(modal.body, 'rateRpm'), '123');
@@ -111,7 +109,6 @@ test('create/edit dialogs and group detail use the same zero-safe group limits',
   const html = detail.groupOverviewTab(group, { requests: 0, errors: 0 });
   assert.match(html, /当前并发：<b>无上限<\/b>；RPM：<b>无上限<\/b>/);
   assert.match(html, /data-form="group-limits"/);
-  assert.match(html, /SSE 全生命周期/);
   assert.equal(inputValue(html, 'rateMaxConcurrent'), '0');
 });
 

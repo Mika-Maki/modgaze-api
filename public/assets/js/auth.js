@@ -7,6 +7,14 @@ const CARD_HEAD = '<div class="auth-card-head"><span>MODGAZE://LOCAL</span><span
 function showAuth(mode = 'login', options = {}) {
   app.authenticated = false;
   app.csrf = null;
+  closeModal();
+  app.data = null;
+  app.stats = null;
+  app.pendingImport = null;
+  app.reveals.clear();
+  // Hidden DOM can still contain revealed credentials and password fields.
+  const view = $('#view');
+  if (view) view.innerHTML = '';
   stopPolling();
   standDownCrt();
   $('#app').classList.add('hidden');
